@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+pip-wheel-metadata/
+
+# Packaging / installer artifacts (PyInstaller, etc.)
+*.spec
+*.exe
+*.msi
+installer/
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# Environment variables
+.env
+
+# User config (overrides only — defaults ship in src/hub_cowork/assets/hub_config.default.json)
+hub_config.json
+
+# Local agent state (~/.hub-cowork lives outside the repo, but a stray copy here is junk)
+.hub-cowork/
+
+# IDE / editors
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# Notebooks
+.ipynb_checkpoints/

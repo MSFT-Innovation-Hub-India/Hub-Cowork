@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hub-cowork"
+version = "0.2.0"
+description = "Hub Cowork — a Windows desktop AI agent for Microsoft 365 engagement workflows."
+requires-python = ">=3.12"
+readme = "README.md"
+authors = [{ name = "Hub Cowork contributors" }]
+dependencies = [
+    "openai>=1.30.0",
+    "azure-identity[persistent-cache]>=1.15.0",
+    "python-dotenv>=1.0.0",
+    "azure-communication-email>=1.0.0",
+    "pywebview>=5.0.0",
+    "websockets>=16.0",
+    "tzlocal>=5.0",
+    "winotify>=1.1.0; platform_system == 'Windows'",
+    "pyyaml>=6.0",
+    "python-docx>=1.1.0",
+    "redis>=5.0",
+    "redis-entraid>=1.0.0",
+    "azure-ai-projects>=2.0.0",
+    "requests>=2.31.0",
+]
+
+[project.scripts]
+# Console REPL (runs with a console window).
+hub-cowork-console = "hub_cowork.host.console:main"
+
+[project.gui-scripts]
+# GUI launcher (no console window on Windows — equivalent to `pythonw -m hub_cowork`).
+hub-cowork = "hub_cowork.host.meeting_agent:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# Ship YAML skills, HTML UI, icons, and the default config JSON inside the
+# wheel so `pip install hub-cowork` gives a runnable app with no extra
+# file-copy step.
+"hub_cowork" = [
+    "assets/*",
+    "skills/*.yaml",
+    "skills/**/*.yaml",
+]

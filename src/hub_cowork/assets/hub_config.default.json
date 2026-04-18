@@ -1,0 +1,100 @@
+{
+  "hub_name": "Innovation Hub",
+  "default_session_start_time": "09:00 AM",
+  "agenda_output_folder": "",
+  "agenda_template_path": "",
+  "topic_catalog": [
+    {
+      "topic_category": "Art of the Possible with AI, Latest Trends in Agentic AI",
+      "speakers": [],
+      "topic": "Current State of AI and Frontier Firms; latest innovations in Agentic AI across Microsoft AI platform components",
+      "description": "In this session, we discuss how Frontier Firms are operationalizing agentic AI, moving from pilots to repeatable business outcomes. We decode the most relevant Ignite 2025 to now innovations across the Microsoft AI platform: Copilot Studio (low-code), Microsoft 365 Copilot and agents, Microsoft AI Foundry (pro-code), and GitHub Copilot Agent Mode, with clear takeaways on where leaders should place bets and how to scale responsibly."
+    },
+    {
+      "topic_category": "Pro code Agentic AI: Microsoft AI Foundry, Control Plane, Foundry IQ, Hosted Agents, Model Router, MCP tool catalog, Entra Agent ID, evals/red teaming, observability, Agent 365",
+      "speakers": [],
+      "topic": "Microsoft AI Foundry and the Agent Control Plane: Operating Agent Fleets (Ignite 2025 to Today)",
+      "description": "In this session, we unpack the biggest pro-code shifts since Ignite 2025: Microsoft AI Foundry as the agent factory, and the Foundry Control Plane as the command center for fleet operations across inventory, health, performance, cost, and policy. We cover Foundry IQ for managed grounding, Hosted Agents (bring your own framework like LangGraph or Microsoft Agent Framework), Model Router plus model choice, and the MCP tool catalog for standardized tool access. Finally, we show the production playbook with OpenTelemetry-based tracing, built-in evaluations, AI Red Teaming Agent workflows, and how to publish and govern agents via Agent 365 across Microsoft Teams and Microsoft 365 Copilot channels."
+    },
+    {
+      "topic_category": "Data and Analytics / Microsoft Fabric: Fabric IQ, OneLake, Data Agents, RTI (Real Time Intelligence), ontology + graph + digital twins, Power BI semantic models",
+      "speakers": [],
+      "topic": "Fabric IQ + OneLake: Semantic, Graph and Real-Time Data for Decision Intelligence",
+      "description": "In this session, we show how Microsoft Fabric is evolving into an AI-ready decision platform that connects data, meaning, and action. We build on OneLake (shortcuts and mirroring), then layer in RTI and Data Agents to turn real-time signals into outcomes. We introduce Fabric IQ as the semantic intelligence layer with ontology, graph, and digital twin patterns that reuse and extend Power BI semantic models, and highlight leader-relevant FabCon 2026 announcements that improve governance, scale, and time-to-insight."
+    },
+    {
+      "topic_category": "Modern Work / M365 Copilot: Frontier Agents, Researcher (multi-modal), multi-model choice, Model Council, Copilot Cowork, Agent Mode (Office apps), pervasive AI, no-code agent builders",
+      "speakers": [],
+      "topic": "Frontier Agents and Multi-Model Copilot: From Research to Execution Across Microsoft 365",
+      "description": "In this session, we explore the next wave of Modern Work AI: Frontier Agents in Microsoft 365 Copilot, multi-model and emerging multi-modal Researcher, and confidence patterns like Critique and Model Council. We connect this to Copilot Cowork (multi-model execution, including Anthropic) and Agent Mode in Office apps, showing how Copilot shifts from answering to doing with governed, pervasive AI across apps and end-to-end workflows."
+    },
+    {
+      "topic_category": "Low code Agentic AI: Copilot Studio, Power Platform, Power Automate, agent flows, multi-agent, MCP, Graph actions, Entra Agent ID, Agent 365, governance/evals",
+      "speakers": [],
+      "topic": "Copilot Studio + Power Automate: Low Code Agentic Automation at Enterprise Scale (Ignite 2025 to Today)",
+      "description": "In this session, we discuss what changed from Ignite 2025 to today in the low-code agent stack: Microsoft Copilot Studio as the enterprise agent factory and Power Automate as the execution engine for end-to-end processes. We cover the shift from chatbots to multi-agent orchestration, agent flows, and tool-based action via Microsoft Graph actions and MCP servers for standardized connectors and tools. We also highlight the control and trust layer leaders care about: Entra Agent ID, Agent 365 governance, built-in evaluations and analytics, and guardrails like DLP, Purview, and monitoring via Microsoft Sentinel, so automation scales without scaling risk."
+    },
+    {
+      "topic_category": "Data Governance and Purview: Unified Catalog, DSPM for AI, Fabric/OneLake governance, Defender integration, Agent 365 plus Foundry compliance",
+      "speakers": [],
+      "topic": "Purview as the AI Guardrail: Governing Data, Copilots and Agents (Ignite 2025 to FabCon 2026 to Today)",
+      "description": "In this session, we discuss how Microsoft Purview has become the operating layer for governed AI, making data discoverable, classifiable, and enforceable across Fabric, Microsoft 365, and custom agents. We highlight DSPM for AI and AI observability for sensitive data access, and tighter controls for labels, DLP, audit, and eDiscovery on AI interactions. Building on FabCon 2026, we connect Purview and OneLake/Fabric for unified cataloging and lineage, and cover emerging OneLake governance patterns that reduce oversharing. We also show how Purview works with Microsoft Defender to apply sensitivity labels and correlate Insider Risk signals in Defender XDR, and how Purview can be injected into Foundry agents via Foundry Control Plane integration to capture prompts and responses and apply enterprise compliance policy."
+    },
+    {
+      "topic_category": "Agent Ops / IT Admin: Agent 365 control plane, Entra Agent ID, registry, access control, telemetry/observability, Purview + Defender, M365 admin center",
+      "speakers": [],
+      "topic": "Microsoft Agent 365: The Control Plane for Agent Fleets (Identity, Governance, Observability)",
+      "description": "In this session, we discuss why Microsoft Agent 365 is emerging as the enterprise control plane for agents, treating them like digital employees with Microsoft Entra Agent ID. We walk through five admin pillars leaders care about: unified registry (including discovery and quarantine of shadow agents), access control (least privilege plus conditional access), fleet visualization and telemetry (dashboards and alerts), interoperability across Copilot Studio, Foundry, and third-party agents, and integrated security and compliance with Microsoft Defender and Microsoft Purview. We conclude with practical takeaways on publishing, approving, assigning, blocking, and retiring agents through the Microsoft 365 admin center while keeping cost, risk, and sprawl under control."
+    },
+    {
+      "topic_category": "Business Apps (CRM/ERP): Dynamics 365 Copilot and agents, Sales Development Agent, Customer Intent/Service agents, Work IQ + Dataverse, MCP actions, Agent 365 governance",
+      "speakers": [],
+      "topic": "Dynamics 365 Copilots and Agents: From System of Record to System of Action (Ignite 2025 to 2026 Wave)",
+      "description": "In this session, we discuss how Dynamics 365 is being re-architected for agentic business apps, shifting CRM and ERP from a system of record to a system of action. Using updates since Ignite 2025, we spotlight role-based and autonomous patterns such as the Sales Development Agent for pipeline creation, Customer Intent and Quality Evaluation agents in Contact Center, and next-best-action copilots across service, finance, supply chain, manufacturing, and commerce. We also cover how these agents are grounded in Dataverse and operational context, exposed as standardized actions via MCP, and governed end-to-end through Agent 365 with Entra identity and Purview/Defender compliance guardrails."
+    },
+    {
+      "topic_category": "Azure / Agentic DevOps (AIOps): Azure Copilot, Azure SRE Agent (GA), Azure Monitor observability agent, incident automation, MCP connectors, telemetry-to-action",
+      "speakers": [],
+      "topic": "Agentic Cloud Ops on Azure: From Copilot to SRE Agent (Observe, Investigate, Mitigate)",
+      "description": "In this session, we discuss how Azure is moving to agentic cloud operations: Azure Copilot as the guided operations layer, and Azure SRE Agent as the autonomous reliability teammate that turns telemetry into action. We show the closed loop of observe, investigate, explain, propose, approve, and execute, grounded in Azure resources, logs, metrics, traces, and operational knowledge, with automation primitives like skills, subagents, hooks, and Python/code execution. We also cover Azure Monitor observability agent workflows and how MCP connectors plus integrations with systems like ServiceNow and PagerDuty enable cross-tool incident response to reduce MTTR and on-call toil."
+    },
+    {
+      "topic_category": "Endpoint Management / Zero Trust: Microsoft Intune, Intune Suite, Security Copilot + Intune agents, Autopilot device preparation, Endpoint Privilege Management, Advanced Analytics, Remote Help, Cloud PKI, Conditional Access",
+      "speakers": [],
+      "topic": "Unified Endpoint Management with Intune: AI-Assisted Ops + Zero Trust Across Every Device",
+      "description": "In this session, we discuss how Microsoft Intune is evolving into the control plane for heterogeneous, BYOD-first endpoint estates across Windows, macOS, iOS/iPadOS, Android, Linux, and ChromeOS with platform-aware policies, zero-touch onboarding, app protection, and Conditional Access. We highlight material updates since Ignite 2025 including Security Copilot in Intune and new agentic workflows for policy configuration and change review. We also cover baseline capabilities leaders standardize on: Autopilot device preparation, Endpoint Privilege Management, Advanced Analytics, Remote Help, and Cloud PKI so endpoint security scales without slowing productivity."
+    },
+    {
+      "topic_category": "Security Ops / Unified Defense: Microsoft Defender XDR, Microsoft Sentinel, Security Copilot agents, Exposure Management (XSPM/CTEM), threat intelligence, AI agent protection",
+      "speakers": [],
+      "topic": "From XDR to Agentic SOC: Unified Threat Protection with Defender, Sentinel and Security Copilot",
+      "description": "In this session, we discuss how Microsoft is building an agentic SOC by moving beyond siloed tools to a unified security operations platform anchored on Microsoft Defender XDR and Microsoft Sentinel. We highlight capabilities since Ignite 2025 including embedded Security Copilot agents that automate phishing triage, threat hunting, and accelerated investigation, along with unified incident context across endpoint, identity, email, SaaS, and cloud signals to reduce alert fatigue and MTTR. We also cover Exposure Management to prioritize attack paths, controls to secure AI agents, and how Sentinel plus Security Copilot integration with graph context and MCP enables faster, auditable, repeatable response at scale."
+    },
+    {
+      "topic_category": "Cloud Desktops / Secure Workforce: Windows 365 Cloud PCs, Azure Virtual Desktop, Windows 365 Link, Frontline, Reserve, Windows 365 for Agents, Intune + Entra Conditional Access",
+      "speakers": [],
+      "topic": "Windows in the Cloud: Secure, Elastic Desktops with Windows 365 and Azure Virtual Desktop",
+      "description": "In this session, we discuss how Windows 365 and Azure Virtual Desktop enable a secure, elastic desktop plane for hybrid work, suitable for BYOD, contractors, frontline workers, and high-security environments. We cover major advances highlighted at Ignite 2025 such as Windows 365 Link, Frontline innovations, and rapid capacity patterns like Windows 365 Reserve. We also cover the emerging agentic desktop direction with Windows 365 for Agents and the governance stack with Intune and Entra Conditional Access to enforce Zero Trust while reducing endpoint risk and operational overhead."
+    }
+  ],
+
+  "FOUNDRYIQ_ENDPOINT": "",
+  "FOUNDRYIQ_KB_NAME": "rfp-knowledge-store",
+  "FOUNDRYIQ_AUTH_MODE": "browser",
+  "FOUNDRYIQ_API_VERSION": "2025-11-01-preview",
+
+  "FOUNDRY_PROJECT_ENDPOINT": "",
+  "FOUNDRY_AGENT_NAME": "project-analysis-agent",
+  "FOUNDRY_AUTH_MODE": "browser",
+
+  "RESOURCE_TENANT_ID": "",
+
+  "RFP_OUTPUT_FOLDER": "",
+
+  "RFP_SHARE_RECIPIENTS": "",
+
+  "GRAPH_TENANT_ID": "",
+  "GRAPH_CLIENT_ID": "",
+  "GRAPH_CLIENT_SECRET": "",
+  "GRAPH_USER_UPN": ""
+}
