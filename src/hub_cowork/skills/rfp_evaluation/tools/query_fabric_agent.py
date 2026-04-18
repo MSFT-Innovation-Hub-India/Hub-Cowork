@@ -176,8 +176,8 @@ def handle(arguments: dict, *, on_progress=None, **kwargs) -> str:
 
     logger.info("[FabricAgent] Querying agent '%s': %s", agent_name, question[:150])
     if on_progress:
-        preview = question[:120] + "..." if len(question) > 120 else question
-        on_progress("tool", f"Querying Fabric Data Agent: {preview}")
+        # Send the full question — UI tooltip / Progress tab show it in full.
+        on_progress("tool", f"Querying Fabric Data Agent: {question}")
 
     try:
         from azure.ai.projects import AIProjectClient

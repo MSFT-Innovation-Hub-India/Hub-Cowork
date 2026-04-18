@@ -318,7 +318,43 @@ class RedisBridge:
                 pool.submit(thread.id, text, request_id=request_id)
                 return
 
-        # kind == "new" — create a fresh thread, set its skill, dispatch.
+        # kind == "new" — gate: only one in-flight remote task per Teams user.
+        # If this sender already has a thread in `running` or `awaiting_user`,
+        # politely refuse the new task. SYSTEM queries and replies to existing
+        # threads are still allowed (handled above). Local UI-initiated
+        # threads do NOT count toward the cap.
+        in_flight = [
+            t for t in active
+            if t.source == "remote"
+            and t.external_user == sender
+            and t.status in ("running", "awaiting_user")
+        ]
+        if in_flight:
+            blocker = max(in_flight, key=lambda t: t.updated_at)
+            status_word = (
+                "is still in progress" if blocker.status == "running"
+                else "is waiting for your reply"
+            )
+            logger.info(
+                "[InboxRouter] Rejecting new task from %s — blocker thread %s (status=%s)",
+                sender, blocker.id, blocker.status,
+            )
+            self._write_outbox(
+                text=(
+                    f"I can't start a new task right now — "
+                    f"\"{blocker.title[:60]}\" ({blocker.hitl_correlation_tag}) "
+                    f"{status_word}. Please reply to that thread to continue "
+                    f"it, or wait for it to finish before sending a new "
+                    f"request. You can also start additional tasks directly "
+                    f"on your laptop."
+                ),
+                in_reply_to=msg_id,
+                thread_id=blocker.id,
+                status="rejected",
+            )
+            return
+
+        # Cleared the gate — create a fresh thread, set its skill, dispatch.
         title = text[:60]
         thread = tm.create(title=title, source="remote", external_user=sender)
         try:

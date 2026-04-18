@@ -107,9 +107,18 @@ class ConversationThread:
     def summary(self) -> dict[str, Any]:
         """Lightweight summary for list views — no heavy log arrays."""
         last_user_excerpt = ""
+        last_agent_excerpt = ""
+        # Walk newest → oldest, capture the most recent user message and
+        # the most recent assistant message. The agent excerpt lets the
+        # inbox classifier resolve anaphoric follow-ups ("more details
+        # about that event") against what the agent actually said.
         for m in reversed(self.messages):
-            if m.get("role") == "user":
+            role = m.get("role")
+            if role == "user" and not last_user_excerpt:
                 last_user_excerpt = (m.get("content") or "")[:120]
+            elif role == "assistant" and not last_agent_excerpt:
+                last_agent_excerpt = (m.get("content") or "")[:240]
+            if last_user_excerpt and last_agent_excerpt:
                 break
         return {
             "id": self.id,
@@ -122,6 +131,7 @@ class ConversationThread:
             "updated_at": self.updated_at,
             "message_count": len(self.messages),
             "last_user_excerpt": last_user_excerpt,
+            "last_agent_excerpt": last_agent_excerpt,
             "hitl_correlation_tag": self.hitl_correlation_tag,
             "archive_location": self.archive_location,
         }
