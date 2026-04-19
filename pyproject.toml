@@ -39,7 +39,7 @@ hub-cowork-console = "hub_cowork.host.console:main"
 
 [project.gui-scripts]
 # GUI launcher (no console window on Windows — equivalent to `pythonw -m hub_cowork`).
-hub-cowork = "hub_cowork.host.meeting_agent:main"
+hub-cowork = "hub_cowork.host.desktop_host:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

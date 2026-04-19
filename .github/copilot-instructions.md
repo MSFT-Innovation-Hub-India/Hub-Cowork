@@ -4,7 +4,7 @@
 
 Hub Cowork is a **single-process, multi-threaded Windows desktop agent** (Python 3.12+). It combines a WebSocket server, pywebview UI, Win32 system tray, a **per-conversation executor pool**, and an optional Azure Managed Redis bridge for Teams-based remote messaging.
 
-All code lives under `src/hub_cowork/` and is packaged/installed as the `hub-cowork` distribution. The entry point is `python -m hub_cowork` (→ `src/hub_cowork/__main__.py` → `host.meeting_agent.main`).
+All code lives under `src/hub_cowork/` and is packaged/installed as the `hub-cowork` distribution. The entry point is `python -m hub_cowork` (→ `src/hub_cowork/__main__.py` → `host.desktop_host.main`).
 
 | Component | Module | Role |
 |---|---|---|
@@ -16,7 +16,7 @@ All code lives under `src/hub_cowork/` and is packaged/installed as the `hub-cow
 | Hub config | `core/hub_config.py` | Merges shipped defaults (`assets/hub_config.default.json`) with user overrides (`~/.hub-cowork/hub_config.json`); also stores `_env_overrides` for the Settings UI env editor |
 | App paths | `core/app_paths.py` | Central app-home + branding constants (`~/.hub-cowork/`, `"Hub Cowork"`) |
 | Email/calendar | `core/outlook_helper.py` | ACS email + `.ics` invite builder |
-| Desktop host | `host/meeting_agent.py` | WebSocket server (18080), HTTP server (18081), pywebview three-pane UI, tray wire-up, wires `ThreadManager` observers + `ExecutorPool` + optional Redis bridge |
+| Desktop host | `host/desktop_host.py` | WebSocket server (18080), HTTP server (18081), pywebview three-pane UI, tray wire-up, wires `ThreadManager` observers + `ExecutorPool` + optional Redis bridge |
 | Console host | `host/console.py` | Terminal REPL — no UI, no Redis bridge (exposed as `hub-cowork-console` script) |
 | Remote bridge | `host/redis_bridge.py` | Azure Managed Redis inbox poller, 3-way classifier, **per-Teams-user in-flight gate**, outbox writer with `in_reply_to` + `#thread-xxxx` correlation, presence key with TTL heartbeat |
 | Tray icon | `host/tray_icon.py` | Raw Win32 ctypes tray with its own message-pump thread |
@@ -135,7 +135,7 @@ Hub SE Agent is a **single-process, multi-threaded Windows desktop agent** built
 | Component | File | Role |
 |---|---|---|
 | Agent core | `agent_core.py` | LLM router, inbox classifier, skill loader, tool loader, Azure OpenAI Responses API client, thread-scoped `run_agent_on_thread` / `run_skill_on_thread` |
-| Desktop host | `meeting_agent.py` | WebSocket server (port 18080), pywebview three-pane UI, tray icon, toast notifications, wires ThreadManager observers + ExecutorPool |
+| Desktop host | `desktop_host.py` | WebSocket server (port 18080), pywebview three-pane UI, tray icon, toast notifications, wires ThreadManager observers + ExecutorPool |
 | Conversation state | `conversation_thread.py` | `ConversationThread` dataclass — id, status, messages, progress_log, code_log, `previous_response_id`, `hitl_correlation_tag` |
 | Thread registry | `thread_manager.py` | Thread-safe singleton; in-memory store + observer pattern; exports `current_thread_id` ContextVar and `SYSTEM_THREAD_ID` |
 | Persistence | `thread_store.py` | `LocalJsonThreadStore` with debounced atomic writes under `~/.hub-cowork/threads/{active,archive}/`; `ThreadArchiveStore` Protocol reserved for Cosmos DB |
@@ -153,9 +153,9 @@ See [README.md](../README.md) for the full architecture diagram and feature over
 python -m venv .venv; .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 cp .env.example .env   # fill in values
-python meeting_agent.py # debug (with console)
-pythonw meeting_agent.py # production (headless)
-python agent.py         # console REPL, no UI
+python -m hub_cowork  # debug (with console)
+pythonw -m hub_cowork # production (headless)
+hub-cowork-console    # console REPL, no UI
 ```
 
 Required env vars: `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_CHAT_MODEL`, `AZURE_OPENAI_API_VERSION`, `ACS_ENDPOINT`, `ACS_SENDER_ADDRESS`, `AZURE_TENANT_ID`.

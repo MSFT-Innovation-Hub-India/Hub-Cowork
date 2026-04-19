@@ -325,7 +325,7 @@ After changing env values the UI offers a one-click restart.
 
 ### How it all fits together
 
-1. **Single-process launcher** (`python -m hub_cowork` → `hub_cowork/__main__.py` → `host/meeting_agent.py::main`) — applies `_env_overrides` from the Settings UI, loads `.env` and packaged `.env.defaults`, starts the WebSocket/HTTP servers, system tray, optional Redis bridge, shows a startup toast, and enters the pywebview event loop.
+1. **Single-process launcher** (`python -m hub_cowork` → `hub_cowork/__main__.py` → `host/desktop_host.py::main`) — applies `_env_overrides` from the Settings UI, loads `.env` and packaged `.env.defaults`, starts the WebSocket/HTTP servers, system tray, optional Redis bridge, shows a startup toast, and enters the pywebview event loop.
 
 2. **WebSocket server (port 18080)** — JSON protocol, typed messages for threads, progress, logs, config, and remote-message notifications. See [WebSocket protocol](#websocket-protocol) below.
 
@@ -378,7 +378,7 @@ hub-cowork/
 │   │   └── outlook_helper.py        # ACS email + .ics invite builder
 │   │
 │   ├── host/                    # Runtime hosts (UI, console, remote bridge, tray)
-│   │   ├── meeting_agent.py         # WS+HTTP servers, pywebview UI, tray wire-up, ExecutorPool + Redis wiring
+│   │   ├── desktop_host.py         # WS+HTTP servers, pywebview UI, tray wire-up, ExecutorPool + Redis wiring
 │   │   ├── console.py               # Terminal REPL — no UI, no background mode (hub-cowork-console script)
 │   │   ├── redis_bridge.py          # Redis inbox poller, classifier, per-user gate, outbox writer, presence
 │   │   └── tray_icon.py             # Pure Win32 tray via ctypes (own message pump thread)
@@ -982,7 +982,7 @@ The ⚙ gear icon in the chat header opens a settings modal with:
 - **Agenda Output Folder** — file path where generated Word documents are saved
 - **Agenda Template Document** — optional `.docx` template path (e.g., with header image/branding) prepended to generated agendas
 
-Settings are read/written via WebSocket messages (`get_config` / `save_config`) handled in `meeting_agent.py`.
+Settings are read/written via WebSocket messages (`get_config` / `save_config`) handled in `desktop_host.py`.
 
 ### How skills use the configuration
 
@@ -1079,7 +1079,7 @@ The `get_hub_config` tool returns the merged configuration as JSON. Skills (like
 
 ### How It All Fits Together
 
-1. **Single-process launcher** (`meeting_agent.py`) — Entry point. Starts WebSocket/HTTP servers, starts the system tray icon, configures the task queue, optionally starts the Redis bridge, shows a startup toast, and enters the pywebview event loop.
+1. **Single-process launcher** (`desktop_host.py`) — Entry point. Starts WebSocket/HTTP servers, starts the system tray icon, configures the task queue, optionally starts the Redis bridge, shows a startup toast, and enters the pywebview event loop.
 
 2. **WebSocket server** (port `18080`) — Communication backbone between the chat UI and the Python backend. User messages, agent responses, progress updates, auth status, queue notifications, and remote message alerts all flow over this channel as JSON.
 
@@ -1182,7 +1182,7 @@ All logs are written to `~/.hub-cowork/agent.log` — routing decisions, tool ca
 
 ```
 hub-cowork/
-├── meeting_agent.py       # Main entry point — launcher, WebSocket/HTTP servers,
+├── desktop_host.py        # Main entry point — launcher, WebSocket/HTTP servers,
 │                          #   pywebview window, tray icon, toast, ExecutorPool + Redis wiring
 ├── agent_core.py          # Core agent logic — router, skill loader, tool loader,
 │                          #   auth helpers, shared credential, thread-scoped run funcs
@@ -1286,10 +1286,10 @@ The app does not require VS Code. To run it directly from any PowerShell or Comm
 
 ```powershell
 # Start invisibly (no console window)
-Start-Process -FilePath .\.venv\Scripts\pythonw.exe -ArgumentList "meeting_agent.py" -WorkingDirectory (Get-Location) -WindowStyle Hidden
+Start-Process -FilePath .\.venv\Scripts\pythonw.exe -ArgumentList "-m", "hub_cowork" -WorkingDirectory (Get-Location) -WindowStyle Hidden
 
 # Or for debugging (with console output)
-.\.venv\Scripts\python.exe meeting_agent.py
+.\.venv\Scripts\python.exe -m hub_cowork
 ```
 
 #### Auto-Start at Windows Login

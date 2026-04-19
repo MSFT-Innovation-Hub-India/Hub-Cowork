@@ -59,7 +59,7 @@ def _load_env_files() -> None:
 _apply_env_overrides()
 _load_env_files()
 
-from hub_cowork.host.meeting_agent import main  # noqa: E402
+from hub_cowork.host.desktop_host import main  # noqa: E402
 
 
 if __name__ == "__main__":

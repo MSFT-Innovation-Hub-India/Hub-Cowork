@@ -1,20 +1,20 @@
 ﻿"""
-Hub Cowork â€” Single-process launcher.
+Hub Cowork — Single-process launcher.
 
 Runs completely invisibly:
-  â€¢ WebSocket server runs in a background thread
-  â€¢ pywebview window starts HIDDEN
-  â€¢ System tray icon: left-click to show/hide, right-click for menu
-  â€¢ Toast notifications appear regardless of UI visibility
-  â€¢ No console window until you summon it via tray icon or toast click
+  • WebSocket server runs in a background thread
+  • pywebview window starts HIDDEN
+  • System tray icon: left-click to show/hide, right-click for menu
+  • Toast notifications appear regardless of UI visibility
+  • No console window until you summon it via tray icon or toast click
 
 This is the "hub-cowork" fork of the original hub-se-agent. Every
 user-facing identifier (window title, tray class, AppUserModelID, toast
 app_id, data directory) is distinct from the upstream project so both can
 run side-by-side on the same Windows session without collisions.
 
-Launch:  pythonw meeting_agent.py          (invisible, no console)
-   or:   python  meeting_agent.py          (with console for debugging)
+Launch:  python -m hub_cowork                  (entry point)
+   or:   pythonw -m hub_cowork                 (invisible, no console)
 """
 
 import asyncio
@@ -34,7 +34,7 @@ from websockets.asyncio.server import serve
 import webview
 
 # ---------------------------------------------------------------------------
-# Logging â€” file + (optionally) console
+# Logging — file + (optionally) console
 # ---------------------------------------------------------------------------
 
 LOG_DIR = Path.home()  # placeholder, replaced below from app_paths
@@ -90,7 +90,7 @@ _clients: set = set()
 _loop: asyncio.AbstractEventLoop | None = None
 
 # ---------------------------------------------------------------------------
-# WebSocket log handler â€” streams log lines to the UI in real-time
+# WebSocket log handler — streams log lines to the UI in real-time
 # ---------------------------------------------------------------------------
 
 _LOG_RING_SIZE = 500
@@ -197,7 +197,7 @@ async def _safe_send(ws, data: str):
 
 
 # ---------------------------------------------------------------------------
-# Local UI dispatch â€” threads + executor
+# Local UI dispatch — threads + executor
 # ---------------------------------------------------------------------------
 
 def _ws_thread_summary(thread) -> dict:
@@ -321,40 +321,6 @@ def _run_system_query(request_id: str, user_input: str):
         tm.dispose_ephemeral(ephemeral.id)
 
 
-def _run_validate_speakers(request_id: str | None, names: list[str]):
-    """Batch-resolve speaker names via WorkIQ and broadcast the result.
-
-    UI-triggered (Settings modal → "Validate all"). Runs off the event loop
-    because the WorkIQ CLI call can take several seconds."""
-    from hub_cowork.tools.resolve_speakers import resolve as _resolve
-    from hub_cowork.core.agent_core import WORKIQ_CLI
-
-    def on_progress(kind: str, message: str):
-        _broadcast({"type": "validate_speakers_progress",
-                    "request_id": request_id,
-                    "kind": kind, "message": message})
-
-    _broadcast({"type": "validate_speakers_started",
-                "request_id": request_id,
-                "count": len(names)})
-    token = _current_thread_id.set(SYSTEM_THREAD_ID)
-    try:
-        result = _resolve(names, workiq_cli=WORKIQ_CLI,
-                          on_progress=on_progress)
-        _broadcast({"type": "speakers_validated",
-                    "request_id": request_id,
-                    "results": result.get("results", [])})
-    except Exception as e:
-        logger.error("validate_speakers [%s] failed: %s",
-                     request_id, e, exc_info=True)
-        _broadcast({"type": "speakers_validated",
-                    "request_id": request_id,
-                    "error": str(e)[:500],
-                    "results": []})
-    finally:
-        _current_thread_id.reset(token)
-
-
 # ---------------------------------------------------------------------------
 # WebSocket handler
 # ---------------------------------------------------------------------------
@@ -395,7 +361,7 @@ async def _handler(ws):
             msg = json.loads(raw)
             mtype = msg.get("type")
 
-            # â”€â”€ Thread lifecycle â”€â”€
+            # ── Thread lifecycle ──
             if mtype == "create_thread":
                 user_input = (msg.get("input") or "").strip()
                 if user_input:
@@ -455,7 +421,7 @@ async def _handler(ws):
                         "type": "thread_deleted", "thread_id": thread_id,
                     }))
 
-            # â”€â”€ System query (cross-thread, no persistence) â”€â”€
+            # ── System query (cross-thread, no persistence) ──
             elif mtype == "system_query":
                 user_input = (msg.get("input") or "").strip()
                 if user_input:
@@ -491,11 +457,11 @@ async def _handler(ws):
                     except Exception as e:
                         logger.warning("open_file failed for %s: %s", raw_path, e)
 
-            # â”€â”€ Auth / config â”€â”€
+            # ── Auth / config ──
             elif mtype == "signin":
                 threading.Thread(target=_handle_signin, daemon=True).start()
             elif mtype == "clear_history":
-                # Legacy â€” reset the implicit "qa" history. Individual threads
+                # Legacy — reset the implicit "qa" history. Individual threads
                 # can be cleared via delete_thread.
                 reset_qa_history()
                 await ws.send(json.dumps({
@@ -557,9 +523,11 @@ async def _handler(ws):
                     names = []
                 # Run in a worker thread — WorkIQ CLI can take >10s and we
                 # don't want to block the event loop or other clients.
+                from hub_cowork.host.ui_actions import run_validate_speakers
                 threading.Thread(
-                    target=_run_validate_speakers,
+                    target=run_validate_speakers,
                     args=(req_id, [str(n) for n in names]),
+                    kwargs={"broadcast": _broadcast},
                     daemon=True,
                 ).start()
             elif mtype == "restart":
@@ -761,14 +729,14 @@ def _quit_app():
 def _on_shown():
     """Called when the pywebview window is first shown."""
     global _window
-    # Immediately hide â€” we only want the window visible on demand
+    # Immediately hide — we only want the window visible on demand
     if _window is not None:
         _window.hide()
         _window._agent_hidden = True
 
 
 def _on_closing():
-    """Intercept window close â€” hide instead of quitting."""
+    """Intercept window close — hide instead of quitting."""
     _hide_window()
     if _window is not None:
         _window._agent_hidden = True
@@ -895,7 +863,7 @@ def main():
         })
     tm.add_observer(_on_thread_event)
 
-    # 1b. Start Redis bridge if configured (optional â€” remote task delivery)
+    # 1b. Start Redis bridge if configured (optional — remote task delivery)
     _redis_bridge = None
     redis_endpoint = os.environ.get("AZ_REDIS_CACHE_ENDPOINT")
     if redis_endpoint:
@@ -917,9 +885,9 @@ def main():
             pool.configure(on_thread_reply=_redis_bridge.on_thread_reply)
             _redis_bridge.start(on_broadcast=_broadcast)
         except Exception as e:
-            logger.warning("Redis bridge failed to start: %s â€” running in local-only mode", e)
+            logger.warning("Redis bridge failed to start: %s — running in local-only mode", e)
     else:
-        logger.info("Redis bridge disabled â€” AZ_REDIS_CACHE_ENDPOINT not set")
+        logger.info("Redis bridge disabled — AZ_REDIS_CACHE_ENDPOINT not set")
 
     # 2. Start WebSocket server in a background thread
     server_thread = threading.Thread(target=_run_server, daemon=True)
