@@ -415,6 +415,15 @@ async def _handler(ws):
                     await ws.send(json.dumps({
                         "type": "thread_archived", "thread_id": thread_id,
                     }))
+            elif mtype == "cancel_thread":
+                thread_id = (msg.get("thread_id") or "").strip()
+                pool = get_thread_pool()
+                ok = pool.cancel(thread_id)
+                await ws.send(json.dumps({
+                    "type": "cancel_ack",
+                    "thread_id": thread_id,
+                    "ok": ok,
+                }))
             elif mtype == "unarchive_thread":
                 thread_id = (msg.get("thread_id") or "").strip()
                 if tm.unarchive(thread_id):

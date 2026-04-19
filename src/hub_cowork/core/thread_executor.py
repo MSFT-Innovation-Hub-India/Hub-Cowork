@@ -54,6 +54,10 @@ class _ThreadWorker:
             target=self._run, daemon=True, name=f"exec-{thread_id}",
         )
         self._stopping = False
+        # Cooperative cancellation flag for the *current* in-flight run.
+        # Reset before each _execute() call. The agent loop polls this between
+        # LLM turns and tool calls and aborts if set.
+        self.cancel_event: threading.Event = threading.Event()
 
     def start(self) -> None:
         self.thread.start()
@@ -85,7 +89,7 @@ class _ThreadWorker:
 
     def _execute(self, payload: dict) -> None:
         """Run one user input against the thread."""
-        from hub_cowork.core.agent_core import run_agent_on_thread
+        from hub_cowork.core.agent_core import run_agent_on_thread, Cancelled as _Cancelled
 
         tm = get_manager()
         thread = tm.get(self.thread_id)
@@ -130,8 +134,25 @@ class _ThreadWorker:
         tm.append_message(self.thread_id, "user", user_input, request_id=request_id)
         thread = tm.get(self.thread_id) or thread  # refresh
 
+        # Reset the cancel flag for this run.
+        self.cancel_event.clear()
+        is_cancelled = self.cancel_event.is_set
+
         try:
-            result = run_agent_on_thread(thread, user_input, on_progress=on_progress)
+            result = run_agent_on_thread(thread, user_input,
+                                         on_progress=on_progress,
+                                         is_cancelled=is_cancelled)
+        except _Cancelled:
+            logger.info("[exec %s] cancelled by user", self.thread_id)
+            tm.set_status(self.thread_id, "cancelled")
+            on_progress("milestone", "Stopped by user.")
+            if broadcast:
+                broadcast({
+                    "type": "thread_cancelled",
+                    "thread_id": self.thread_id,
+                    "request_id": request_id,
+                })
+            return
         except Exception as e:
             logger.error("[exec %s] execution failed: %s", self.thread_id, e,
                          exc_info=True)
@@ -213,6 +234,20 @@ class ExecutorPool:
                 worker.start()
         worker.submit({"text": text, "request_id": request_id})
         return request_id
+
+    def cancel(self, thread_id: str) -> bool:
+        """Request cooperative cancellation of the thread's current run.
+
+        The agent loop polls between LLM turns / tool calls and aborts when
+        the flag is set. Returns True if a worker was found, False otherwise.
+        """
+        with self._lock:
+            worker = self._workers.get(thread_id)
+        if worker is None:
+            return False
+        worker.cancel_event.set()
+        logger.info("[exec %s] cancel requested", thread_id)
+        return True
 
     def notify(self, title: str, message: str) -> None:
         if self._on_notify:

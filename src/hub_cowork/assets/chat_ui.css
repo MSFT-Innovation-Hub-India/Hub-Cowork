@@ -819,6 +819,18 @@
   .chat-input button#sendBtn:active { transform: translateY(1px); }
   .chat-input button#sendBtn:disabled { background: var(--n4); opacity: 0.6; }
 
+  /* Stop button: same shape as Send, danger color */
+  .chat-input button#stopBtn {
+    padding: 7px 16px; border-radius: var(--r-sm);
+    background: var(--failed, #cf222e); color: #fff;
+    font-size: var(--fs-sm); font-weight: var(--fw-sem);
+    display: inline-flex; align-items: center; gap: 6px;
+    transition: background 0.12s ease, transform 0.05s ease;
+  }
+  .chat-input button#stopBtn .i { width: 14px; height: 14px; }
+  .chat-input button#stopBtn:hover { background: #b51d2a; }
+  .chat-input button#stopBtn:active { transform: translateY(1px); }
+
   /* Composer notice → tinted banner above the card, only when shown */
   .composer-notice { padding: 0; }
   .chat-input.show-notice .composer-notice {

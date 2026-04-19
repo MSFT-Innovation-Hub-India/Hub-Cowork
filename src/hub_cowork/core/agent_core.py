@@ -641,12 +641,22 @@ def reset_qa_history() -> None:
     logger.info("reset_qa_history() called — no-op in thread-scoped model")
 
 
+class Cancelled(Exception):
+    """Raised when a thread's run is cancelled cooperatively by the user.
+
+    The agent loop polls a caller-supplied `is_cancelled()` callable between
+    LLM turns and before tool dispatch / skill chaining. The ThreadExecutor
+    catches this and marks the thread as `cancelled`.
+    """
+    pass
+
+
 # ---------------------------------------------------------------------------
 # Generic skill runner (thread-scoped)
 # ---------------------------------------------------------------------------
 
 def _run_skill(skill: "Skill", thread, user_input: str,
-               on_progress=None) -> str:
+               on_progress=None, is_cancelled=None) -> str:
     """
     Run a skill against a ConversationThread.
 
@@ -701,6 +711,9 @@ def _run_skill(skill: "Skill", thread, user_input: str,
     if tools:
         step = 1
         while True:
+            # Cooperative cancellation: bail out between LLM turns.
+            if is_cancelled and is_cancelled():
+                raise Cancelled()
             # Log any reasoning/thinking the model produced before tool calls
             for item in response.output:
                 if hasattr(item, "type") and item.type == "reasoning":
@@ -791,6 +804,8 @@ def _run_skill(skill: "Skill", thread, user_input: str,
 
     # Autonomous skill chaining — run next_skill if configured
     if skill.next_skill:
+        if is_cancelled and is_cancelled():
+            raise Cancelled()
         next_skill_obj = _skills.get(skill.next_skill)
         if next_skill_obj:
             logger.info("[%s/%s] Chaining to: %s",
@@ -801,7 +816,8 @@ def _run_skill(skill: "Skill", thread, user_input: str,
             chain_input = final_text or "Continue with the next phase."
             # Update the thread's current skill so UI reflects the active phase.
             tm.set_skill(thread.id, next_skill_obj.name)
-            return _run_skill(next_skill_obj, thread, chain_input, on_progress)
+            return _run_skill(next_skill_obj, thread, chain_input,
+                              on_progress, is_cancelled=is_cancelled)
         else:
             logger.warning("[%s/%s] next_skill '%s' not found — stopping chain",
                            thread.id, skill.name, skill.next_skill)
@@ -847,7 +863,7 @@ def _run_none_skill(user_input: str) -> str:
 
 
 def run_skill_on_thread(thread, skill_name: str, user_input: str,
-                        on_progress=None) -> str:
+                        on_progress=None, is_cancelled=None) -> str:
     """Run a specific skill on a ConversationThread. Updates thread state
     (skill_name, status, messages, active_session, previous_response_id)
     through the ThreadManager."""
@@ -876,10 +892,12 @@ def run_skill_on_thread(thread, skill_name: str, user_input: str,
         if on_progress:
             on_progress("agent", skill.name)
 
-    return _run_skill(skill, thread, user_input, on_progress)
+    return _run_skill(skill, thread, user_input, on_progress,
+                      is_cancelled=is_cancelled)
 
 
-def run_agent_on_thread(thread, user_input: str, on_progress=None) -> str:
+def run_agent_on_thread(thread, user_input: str, on_progress=None,
+                        is_cancelled=None) -> str:
     """Route (if the thread doesn't yet have a skill) and run on the thread.
 
     After the first message of a thread, the skill is fixed for that thread
@@ -895,7 +913,8 @@ def run_agent_on_thread(thread, user_input: str, on_progress=None) -> str:
         skill_name = _route(user_input)
         if skill_name != "none":
             tm.set_skill(thread.id, skill_name)
-    return run_skill_on_thread(thread, skill_name, user_input, on_progress)
+    return run_skill_on_thread(thread, skill_name, user_input, on_progress,
+                               is_cancelled=is_cancelled)
 
 
 # ---------------------------------------------------------------------------

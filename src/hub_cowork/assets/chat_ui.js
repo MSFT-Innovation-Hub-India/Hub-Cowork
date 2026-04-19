@@ -64,6 +64,7 @@ function handleMessage(m) {
     case "thread_progress": onThreadProgress(m); break;
     case "thread_completed":onThreadCompleted(m); break;
     case "thread_error":    onThreadError(m); break;
+    case "thread_cancelled":onThreadCancelled(m); break;
     case "thread_archived": removeThread(m.thread_id); break;
     case "thread_unarchived": upsertThread(m.thread); break;
     case "thread_deleted":  removeThread(m.thread_id); break;
@@ -311,6 +312,7 @@ function updateComposerLockState() {
 
   let show = false;
   let label = "";
+  let isRunning = false;
   if (state.selectedId !== SYSTEM_THREAD_ID && state.selectedId !== DRAFT_THREAD_ID) {
     const t = state.threads.get(state.selectedId) || state.archivedThreads.get(state.selectedId);
     const s = t && t.status;
@@ -323,10 +325,29 @@ function updateComposerLockState() {
             + ". You can keep typing here to continue or "
             + '<a onclick="newThread()">start a new task</a>.';
     }
+    if (s === "running") isRunning = true;
   }
 
   wrap.classList.toggle("show-notice", show);
   notice.innerHTML = show ? label : "";
+
+  // Swap Send <-> Stop based on whether the agent is actively working.
+  const sendBtn = document.getElementById("sendBtn");
+  const stopBtn = document.getElementById("stopBtn");
+  if (sendBtn && stopBtn) {
+    sendBtn.style.display = isRunning ? "none" : "";
+    stopBtn.style.display = isRunning ? "" : "none";
+  }
+}
+
+function cancelCurrentThread() {
+  const tid = state.selectedId;
+  if (!tid || tid === SYSTEM_THREAD_ID || tid === DRAFT_THREAD_ID) return;
+  try {
+    state.ws.send(JSON.stringify({ type: "cancel_thread", thread_id: tid }));
+  } catch (e) {
+    console.warn("cancel send failed", e);
+  }
 }
 
 function renderChatBody() {
@@ -549,6 +570,20 @@ function onThreadError(m) {
   if (state.selectedId === m.thread_id) {
     clearLiveStatus();
     appendMsg("assistant", errText);
+  }
+}
+
+function onThreadCancelled(m) {
+  markThreadStatus(m.thread_id, "cancelled");
+  const note = "⏹  Stopped by user.";
+  const d = state.threadDetail.get(m.thread_id);
+  if (d) {
+    d.messages = d.messages || [];
+    d.messages.push({role: "assistant", content: note});
+  }
+  if (state.selectedId === m.thread_id) {
+    clearLiveStatus();
+    appendMsg("assistant", note);
   }
 }
 
