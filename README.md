@@ -636,6 +636,42 @@ All logs are written to `~/.hub-cowork/agent.log` — routing decisions, tool ca
 
 ---
 
+## UI Architecture (TL;DR)
+
+Hub Cowork is a **native Windows desktop app** whose window contents are
+rendered with HTML / CSS / vanilla JavaScript inside an embedded
+**WebView2** (the Chromium/Edge engine that ships with Windows 10/11),
+hosted by **pywebview**. The UI and the Python backend run in the
+**same `pythonw.exe` process** and talk over a local-loopback WebSocket
+on `127.0.0.1:18080`.
+
+- **No second runtime** — no Node.js, no bundled Chromium, no npm/Vite
+  build step. WebView2 is already installed on every modern Windows.
+- **Still a real native app** — own HWND + taskbar icon, Win32 tray
+  (raw `ctypes`), `winotify` toasts, single-instance mutex, stable
+  `AppUserModelID`, headless `pythonw.exe` in production.
+- **Same pattern used by** VS Code, Teams, Slack, Discord, GitHub
+  Desktop, Azure Data Studio, 1Password, Notion, Postman.
+- **UI assets** live under [src/hub_cowork/assets/](src/hub_cowork/assets):
+  `chat_ui.html` (~180 lines markup), `chat_ui.css` (~560 lines),
+  `chat_ui.js` (~2,100 lines — state, WebSocket client, renderers,
+  Markdown). Vanilla JS, single mutable `state` object, imperative
+  re-render functions, `textContent`-only (XSS-safe).
+
+**Why not Electron / Tauri / React Native / WinUI?** Each of those
+would either bundle a second runtime (Electron = ~150 MB Chromium +
+Node) or force the Python backend to run as a **sidecar process with
+IPC** — strictly more complexity than today. For a single-window,
+single-user, single-author internal tool the cost isn't justified.
+Full rationale and the list of alternatives considered is in
+[docs/ui-architecture.md](docs/ui-architecture.md).
+
+**Revisit this choice when** multiple developers start editing the UI
+in parallel (drop in **Preact + htm** — still no build step), or when
+the same UI also needs to ship as a browser-tab web app.
+
+---
+
 ## License
 
 See the repository's license file.
