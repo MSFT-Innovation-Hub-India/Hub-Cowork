@@ -26,6 +26,13 @@ dependencies = [
     "requests>=2.31.0",
 ]
 
+[project.optional-dependencies]
+# Tooling for building the standalone Windows EXE.
+#   pip install -e ".[build]"
+build = [
+    "pyinstaller>=6.6",
+]
+
 [project.scripts]
 # Console REPL (runs with a console window).
 hub-cowork-console = "hub_cowork.host.console:main"
@@ -45,4 +52,5 @@ where = ["src"]
     "assets/*",
     "skills/*.yaml",
     "skills/**/*.yaml",
+    "skills/**/tools/*.py",
 ]

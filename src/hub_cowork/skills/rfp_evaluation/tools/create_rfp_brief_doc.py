@@ -492,10 +492,21 @@ def handle(arguments: dict, *, on_progress=None, **kwargs) -> str:
         if on_progress:
             on_progress("tool", f"Document saved: {filename}")
 
+        from urllib.parse import quote
+        file_url = "file:///" + quote(str(file_path).replace("\\", "/"), safe="/:")
+        open_link = f"[Open document]({file_url})"
+
+        if on_progress:
+            on_progress(
+                "tool",
+                f"RFP Brief ready: **{filename}** — {open_link}",
+            )
+
         return (
             f"RFP Brief document created successfully.\n"
             f"Filename : {filename}\n"
             f"Saved to : {file_path}\n"
+            f"Open link (markdown): {open_link}\n"
             f"OneDrive will sync this folder automatically."
         )
 

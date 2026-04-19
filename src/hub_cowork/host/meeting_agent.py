@@ -466,11 +466,30 @@ async def _handler(ws):
                         daemon=True,
                     ).start()
 
-            # â”€â”€ Legacy fallback (old UI builds) â”€â”€
+            # ── Legacy fallback (old UI builds) ──
             elif mtype == "task":
                 user_input = (msg.get("input") or "").strip()
                 if user_input:
                     _create_new_thread(user_input, source="ui")
+
+            # ── Open a local file with the OS handler ──
+            elif mtype == "open_file":
+                raw_path = (msg.get("path") or "").strip()
+                if raw_path:
+                    try:
+                        p = Path(raw_path)
+                        if p.is_file():
+                            if sys.platform == "win32":
+                                os.startfile(str(p))  # noqa: PTH123
+                            elif sys.platform == "darwin":
+                                subprocess.Popen(["open", str(p)])
+                            else:
+                                subprocess.Popen(["xdg-open", str(p)])
+                            logger.info("Opened file via UI request: %s", p)
+                        else:
+                            logger.warning("open_file: path not found: %s", raw_path)
+                    except Exception as e:
+                        logger.warning("open_file failed for %s: %s", raw_path, e)
 
             # â”€â”€ Auth / config â”€â”€
             elif mtype == "signin":

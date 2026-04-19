@@ -78,9 +78,14 @@ instructions: |
   Examine the create_word_doc response:
 
   SUCCESS CASE: If the response confirms the document was created:
+  The create_word_doc response includes a line like:
+    Open link (markdown): [Open document](file:///...)
+  Capture the EXACT markdown link string after "Open link (markdown):".
+
   Call log_progress ("Document Created") with:
   - Document name
   - The file path where it was saved
+  - The captured "Open document" markdown link verbatim
   - Note that the document has been opened automatically.
 
   FAILURE CASE: If the response contains an error:
@@ -92,7 +97,10 @@ instructions: |
   After the log_progress call, call log_progress with milestone=true, step_title="Phase 4 Complete — Published", details="Agenda document created for <customer>."
 
   Then your final text response must be ONLY:
-  - On success: "Agenda document '<filename>' created for <customer>."
+  - On success: "Agenda document '<filename>' created for <customer>. <open_link>"
+    where <open_link> is the EXACT markdown link captured from the
+    create_word_doc response (e.g. [Open document](file:///...)).
+    Do NOT alter, re-encode, or shorten the URL inside the link.
   - On failure: "Could not create the Word document. See the error details above."
   Do NOT repeat the agenda content in your final text.
 

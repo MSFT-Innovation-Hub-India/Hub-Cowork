@@ -324,7 +324,29 @@ def handle(arguments: dict, *, on_progress=None, **kwargs) -> str:
         if sys.platform == "win32":
             _pin_onedrive_file(file_path)
 
-        return f"Document created successfully: {file_path}"
+        # Build a clickable file:// URL the UI knows how to open. Forward
+        # slashes only; spaces and other reserved characters must be
+        # percent-encoded — the markdown link regex requires the URL to
+        # contain no whitespace, so OneDrive paths like "OneDrive -
+        # Microsoft" silently break the link without quoting. The link
+        # is included in BOTH the on_progress milestone (so it shows in
+        # the Progress tab) AND the tool return string (so the LLM,
+        # when composing its own log_progress milestone, naturally
+        # propagates the link in the chat narrative).
+        from urllib.parse import quote
+        file_url = "file:///" + quote(str(file_path).replace("\\", "/"), safe="/:")
+        open_link = f"[Open document]({file_url})"
+
+        if on_progress:
+            on_progress(
+                "tool",
+                f"Document created: **{filename}** — {open_link}",
+            )
+
+        return (
+            f"Document created successfully: {file_path}\n"
+            f"Open link (markdown): {open_link}"
+        )
 
     except Exception as e:
         logger.error("[WordDoc] Failed to create document: %s", e, exc_info=True)

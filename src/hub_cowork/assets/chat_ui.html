@@ -244,6 +244,9 @@
 
   .chat-input {
     padding: 10px; border-top: 1px solid var(--border); background: var(--pane);
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .chat-input .composer-row {
     display: flex; gap: 8px;
   }
   .chat-input textarea {
@@ -256,6 +259,20 @@
     border-radius: 6px; cursor: pointer; font-size: 13px;
   }
   .chat-input button:disabled { background: var(--archived); cursor: not-allowed; }
+  /* Informational notice when thread is completed/errored — composer stays usable */
+  .composer-notice {
+    font-size: 12px; color: var(--muted); padding: 0 2px;
+    display: none;
+  }
+  .chat-input.show-notice .composer-notice { display: block; }
+  .composer-notice a {
+    color: var(--accent); cursor: pointer; text-decoration: underline;
+  }
+  /* Clickable file:// links rendered from markdown */
+  a.file-link {
+    color: var(--accent); cursor: pointer; text-decoration: underline;
+  }
+  a.file-link::before { content: "\1F4C4 \00a0"; /* 📄 */ }
 
   /* ------- Right pane: details + logs ------- */
   section.details {
@@ -587,10 +604,13 @@
         like <i>"What's running?"</i> — it never creates a new task.
       </div>
     </div>
-    <div class="chat-input">
-      <textarea id="inputBox" placeholder="Type a message — Shift+Enter for newline"
-                onkeydown="onInputKey(event)" rows="1"></textarea>
-      <button id="sendBtn" onclick="sendInput()">Send</button>
+    <div class="chat-input" id="chatInput">
+      <div class="composer-notice" id="composerNotice"></div>
+      <div class="composer-row">
+        <textarea id="inputBox" placeholder="Type a message — Shift+Enter for newline"
+                  onkeydown="onInputKey(event)" rows="1"></textarea>
+        <button id="sendBtn" onclick="sendInput()">Send</button>
+      </div>
     </div>
   </main>
 
@@ -976,6 +996,7 @@ function renderSelectedHeader() {
     title.textContent = "System · cross-task queries";
     status.textContent = "ready";
     status.className = "status-label";
+    updateComposerLockState();
     return;
   }
   if (state.selectedId === DRAFT_THREAD_ID) {
@@ -983,14 +1004,45 @@ function renderSelectedHeader() {
     title.textContent = "New task";
     status.textContent = "draft";
     status.className = "status-label";
+    updateComposerLockState();
     return;
   }
   const t = state.threads.get(state.selectedId) || state.archivedThreads.get(state.selectedId);
-  if (!t) { tag.textContent = ""; title.textContent = "(not found)"; return; }
+  if (!t) { tag.textContent = ""; title.textContent = "(not found)"; updateComposerLockState(); return; }
   tag.textContent = t.correlation_tag || ("#thread-" + t.id);
   title.textContent = t.title || "(untitled)";
   status.textContent = t.status || "unknown";
   status.className = "status-label " + (t.status || "");
+  updateComposerLockState();
+}
+
+// Show a small informational notice when the selected thread is in a
+// terminal state (completed / error / rejected). The composer stays
+// fully usable — sending a message simply continues the same thread,
+// which is useful for follow-up tweaks (e.g. "regenerate that doc").
+function updateComposerLockState() {
+  const wrap = document.getElementById("chatInput");
+  const notice = document.getElementById("composerNotice");
+  if (!wrap || !notice) return;
+
+  let show = false;
+  let label = "";
+  if (state.selectedId !== SYSTEM_THREAD_ID && state.selectedId !== DRAFT_THREAD_ID) {
+    const t = state.threads.get(state.selectedId) || state.archivedThreads.get(state.selectedId);
+    const s = t && t.status;
+    if (s === "completed" || s === "error" || s === "rejected") {
+      show = true;
+      const pretty = s === "completed" ? "completed"
+                   : s === "rejected" ? "rejected"
+                   : "ended with an error";
+      label = "This thread is " + pretty
+            + ". You can keep typing here to continue or "
+            + '<a onclick="newThread()">start a new task</a>.';
+    }
+  }
+
+  wrap.classList.toggle("show-notice", show);
+  notice.innerHTML = show ? label : "";
 }
 
 function renderChatBody() {
@@ -2725,9 +2777,20 @@ function renderInline(text) {
 
   // Links: [text](url)
   s = s.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)/g, (_, label, url, title) => {
-    const safeUrl = /^(https?:|mailto:|#|\/)/i.test(url) ? url : "#";
+    // Allow web/mail/in-page anchors, plus local file:/// URLs (which we
+    // intercept globally in a click handler and route through the agent's
+    // open_file WS message — pywebview won't navigate file:// itself).
+    let safeUrl = "#";
+    if (/^(https?:|mailto:|#|\/)/i.test(url)) {
+      safeUrl = url;
+    } else if (/^file:/i.test(url)) {
+      safeUrl = url;
+    }
     const t = title ? ` title="${title}"` : "";
-    return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer"${t}>${label}</a>`;
+    const isFile = /^file:/i.test(safeUrl);
+    const cls = isFile ? ' class="file-link"' : "";
+    const target = isFile ? "" : ' target="_blank" rel="noopener noreferrer"';
+    return `<a href="${safeUrl}"${target}${cls}${t}>${label}</a>`;
   });
 
   // Bold + italic.
@@ -2748,6 +2811,21 @@ function renderInline(text) {
 
 // Boot
 connect();
+
+// Intercept clicks on file:// links anywhere in the UI and ask the agent
+// to open the file with the OS handler. pywebview won't navigate to
+// file:// URLs and even if it did the embedded webview can't launch
+// Word/Excel/etc. The agent runs locally so it can just os.startfile.
+document.addEventListener("click", (e) => {
+  const a = e.target.closest && e.target.closest('a[href^="file:"]');
+  if (!a) return;
+  e.preventDefault();
+  let url = a.getAttribute("href") || "";
+  // file:///C:/Users/... → C:/Users/...
+  let path = url.replace(/^file:\/{2,3}/i, "");
+  try { path = decodeURIComponent(path); } catch (_) { /* ignore */ }
+  send({type: "open_file", path: path});
+});
 
 // Close settings modal on Escape.
 document.addEventListener("keydown", (e) => {
