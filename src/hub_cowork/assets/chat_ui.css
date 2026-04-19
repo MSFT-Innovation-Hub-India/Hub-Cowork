@@ -558,3 +558,767 @@
     margin-bottom: 6px; user-select: none;
   }
   details.advanced > summary:hover { color: var(--text); }
+
+  /* ═══════════════════════════════════════════════════════════════
+     POLISH LAYER — token system, refined typography, dark mode.
+     Appended after the legacy rules so cascade order wins; nothing
+     above this line was deleted, so behaviour is unchanged on any
+     selector this layer doesn't address.
+     ═══════════════════════════════════════════════════════════════ */
+  :root {
+    /* Neutral ramp (light) */
+    --n0: #ffffff;
+    --n1: #fafbfc;
+    --n2: #f3f4f7;
+    --n3: #e6e8ee;
+    --n4: #c7ccd6;
+    --n5: #6b7280;
+    --n6: #2b313b;
+    --n7: #14171c;
+
+    /* Semantic re-points */
+    --bg:            var(--n2);
+    --pane:          var(--n0);
+    --border:        rgba(20, 23, 28, 0.07);
+    --border-strong: rgba(20, 23, 28, 0.14);
+    --text:          var(--n7);
+    --muted:         var(--n5);
+    --accent:        #1f6feb;
+    --accent-hover:  #1a5fcc;
+    --accent-soft:   #eaf2fd;
+
+    /* Typography scale */
+    --fs-xs: 11px;
+    --fs-sm: 12px;
+    --fs-md: 13px;
+    --fs-lg: 15px;
+    --fs-xl: 17px;
+    --fw-reg: 400;
+    --fw-med: 500;
+    --fw-sem: 600;
+
+    /* Radii */
+    --r-sm: 6px;
+    --r-md: 10px;
+    --r-lg: 14px;
+    --r-pill: 999px;
+
+    /* Elevation */
+    --shadow-1: 0 1px 2px rgba(15, 20, 30, 0.05);
+    --shadow-2: 0 2px 6px rgba(15, 20, 30, 0.08);
+    --shadow-3: 0 8px 24px rgba(15, 20, 30, 0.12);
+
+    /* Spacing scale (use as needed) */
+    --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px;
+
+    --font: "Segoe UI Variable Text", "Segoe UI", -apple-system, "SF Pro Text",
+            Helvetica, Arial, sans-serif;
+    --font-num: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  }
+
+  /* ── Dark mode (Windows app-mode follows the system setting via WebView2) ── */
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --n0: #1b1f26;
+      --n1: #20242c;
+      --n2: #161a20;
+      --n3: #2a2f38;
+      --n4: #3a4150;
+      --n5: #98a2b3;
+      --n6: #cdd2dc;
+      --n7: #eef0f4;
+
+      --bg:            var(--n2);
+      --pane:          var(--n0);
+      --border:        rgba(255, 255, 255, 0.06);
+      --border-strong: rgba(255, 255, 255, 0.12);
+      --text:          var(--n7);
+      --muted:         var(--n5);
+      --accent:        #4b8bf5;
+      --accent-hover:  #6aa1ff;
+      --accent-soft:   rgba(75, 139, 245, 0.14);
+
+      --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.45);
+      --shadow-2: 0 2px 8px rgba(0, 0, 0, 0.50);
+      --shadow-3: 0 10px 30px rgba(0, 0, 0, 0.55);
+    }
+    .md code {
+      background: rgba(255, 255, 255, 0.06); border-color: var(--border);
+    }
+    .md th, .md tr:nth-child(even) td { background: rgba(255, 255, 255, 0.03); }
+    .chat-header .tag { background: rgba(255, 255, 255, 0.06); }
+    header.topbar button.secondary,
+    .modal button.secondary,
+    .details .actions button { background: rgba(255, 255, 255, 0.06); color: var(--text); }
+    .speaker-validator, .topic-editor, .topic-card,
+    .add-topic-form { background: var(--n1); }
+    .signin-banner { background: rgba(255, 200, 80, 0.10); border-color: rgba(255, 200, 80, 0.40); }
+  }
+
+  body {
+    font-size: var(--fs-md);
+    font-feature-settings: "ss01", "cv11";
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── Topbar ── */
+  .app { grid-template-rows: 48px 1fr; }
+  header.topbar {
+    padding: 0 18px; gap: 14px;
+    background: var(--pane);
+    border-bottom: 1px solid var(--border);
+  }
+  header .title { font-size: var(--fs-lg); font-weight: var(--fw-sem); letter-spacing: -0.01em; }
+  header .user  { font-size: var(--fs-sm); }
+  header button {
+    border-radius: var(--r-sm); padding: 6px 12px;
+    font-weight: var(--fw-med);
+    transition: background 0.12s ease, transform 0.05s ease;
+  }
+  header button:hover { background: var(--accent-hover); }
+  header button.secondary { background: var(--n2); color: var(--text); }
+  header button.secondary:hover { background: var(--n3); }
+  header button:active { transform: translateY(1px); }
+
+  /* ── Thread list ── */
+  aside.threads { border-right: 1px solid var(--border); }
+  .threads .tools { padding: 10px; gap: 8px; border-bottom: 1px solid var(--border); }
+  .threads .tools button {
+    padding: 7px 10px; border-radius: var(--r-sm);
+    font-size: var(--fs-sm); font-weight: var(--fw-med);
+    border: 1px solid var(--border-strong); background: var(--pane);
+    transition: background 0.12s ease;
+  }
+  .threads .tools button:hover { background: var(--n2); }
+  .threads .tools button.primary {
+    background: var(--accent); color: #fff; border-color: var(--accent);
+  }
+  .threads .tools button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+  .threads .filters {
+    padding: 8px 10px; gap: 10px;
+    font-size: var(--fs-xs); color: var(--muted);
+    border-bottom: 1px solid var(--border);
+  }
+  .threads .filters input[type="checkbox"] { accent-color: var(--accent); }
+
+  .thread-item {
+    padding: 11px 14px; gap: 4px;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.10s ease;
+  }
+  .thread-item:hover { background: var(--n2); }
+  .thread-item.active {
+    background: var(--accent-soft);
+    border-left: 3px solid var(--accent); padding-left: 11px;
+  }
+  .thread-item.system {
+    background: rgba(102, 57, 186, 0.06);
+    border-left: 3px solid var(--system); padding-left: 11px;
+  }
+  .thread-item .row1 { gap: 8px; }
+  .thread-item .title {
+    font-size: var(--fs-md); font-weight: var(--fw-sem);
+    color: var(--text); letter-spacing: -0.005em;
+  }
+  .thread-item .meta {
+    font-size: var(--fs-xs); color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .thread-item .time {
+    margin-left: auto; flex: none;
+    font-size: var(--fs-xs); color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .thread-item.active .time { color: var(--accent); }
+
+  /* ── Chat header ── */
+  .chat-header {
+    padding: 12px 18px; gap: 12px; border-bottom: 1px solid var(--border);
+  }
+  .chat-header .tag {
+    background: var(--n2); color: var(--muted);
+    padding: 3px 8px; border-radius: var(--r-pill);
+    font-size: 10.5px; letter-spacing: 0.02em;
+  }
+  .chat-header .title {
+    font-size: var(--fs-lg); font-weight: var(--fw-sem); letter-spacing: -0.01em;
+  }
+  .chat-header .status-label {
+    padding: 3px 10px; border-radius: var(--r-pill);
+    font-size: 10.5px; font-weight: var(--fw-sem);
+    text-transform: uppercase; letter-spacing: 0.04em;
+    background: var(--n3); color: var(--n6);
+  }
+  .chat-header .status-label.running   { background: rgba(31, 136, 61, 0.14); color: #1f883d; }
+  .chat-header .status-label.awaiting_user { background: rgba(191, 135, 0, 0.16); color: #b07b00; }
+  .chat-header .status-label.failed    { background: rgba(207, 34, 46, 0.14); color: #cf222e; }
+  .chat-header .status-label.completed { background: var(--n3); color: var(--n6); }
+
+  /* ── Chat body / bubbles ── */
+  .chat-body { padding: 20px 22px; gap: 14px; }
+  .msg {
+    padding: 10px 14px; border-radius: var(--r-lg);
+    box-shadow: var(--shadow-1);
+    line-height: 1.5; font-size: var(--fs-md);
+    max-width: 70%;
+  }
+  .msg.user {
+    background: var(--accent); color: #fff;
+    border-bottom-right-radius: var(--r-sm);
+  }
+  .msg.assistant {
+    background: var(--pane); color: var(--text);
+    border: 1px solid var(--border);
+    border-bottom-left-radius: var(--r-sm);
+    max-width: 78%;
+  }
+  /* Drop the shouty USER / ASSISTANT labels — alignment + colour already convey role.
+     Keep the element in the DOM so existing tests / future hover tooltips can use it. */
+  .msg .role { display: none; }
+
+  .msg.progress {
+    font-size: var(--fs-sm); color: var(--muted);
+    border-left: 2px solid var(--border-strong);
+    box-shadow: none; background: transparent;
+  }
+
+  /* ── Composer card ── */
+  .chat-input {
+    padding: 12px 16px 16px; background: var(--bg);
+    border-top: 1px solid var(--border); gap: 8px;
+  }
+  .chat-input .composer-row {
+    background: var(--pane);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-md);
+    padding: 8px 8px 8px 12px;
+    gap: 8px; align-items: flex-end;
+    box-shadow: var(--shadow-1);
+    transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  }
+  .chat-input .composer-row:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .chat-input textarea {
+    border: 0; padding: 6px 0; min-height: 26px; max-height: 180px;
+    background: transparent; color: var(--text);
+    font-size: var(--fs-md); line-height: 1.5;
+    outline: none;
+  }
+  .chat-input textarea::placeholder { color: var(--muted); }
+  .chat-input button#sendBtn {
+    padding: 7px 16px; border-radius: var(--r-sm);
+    background: var(--accent); color: #fff;
+    font-size: var(--fs-sm); font-weight: var(--fw-sem);
+    transition: background 0.12s ease, transform 0.05s ease, opacity 0.12s ease;
+    opacity: 0.55;
+  }
+  .chat-input.has-input button#sendBtn { opacity: 1; }
+  .chat-input button#sendBtn:hover { background: var(--accent-hover); }
+  .chat-input button#sendBtn:active { transform: translateY(1px); }
+  .chat-input button#sendBtn:disabled { background: var(--n4); opacity: 0.6; }
+
+  /* Composer notice → tinted banner above the card, only when shown */
+  .composer-notice { padding: 0; }
+  .chat-input.show-notice .composer-notice {
+    padding: 8px 12px;
+    background: var(--accent-soft);
+    border: 1px solid rgba(31, 111, 235, 0.20);
+    border-radius: var(--r-sm);
+    color: var(--text);
+    font-size: var(--fs-sm);
+  }
+  .composer-notice a { color: var(--accent); font-weight: var(--fw-med); }
+
+  /* ── Right pane: tabs ── */
+  section.details { border-left: 1px solid var(--border); }
+  .details .tabs { padding: 0 6px; gap: 0; border-bottom: 1px solid var(--border); }
+  .details .tabs button {
+    padding: 12px 14px; font-size: var(--fs-sm); font-weight: var(--fw-med);
+    border-bottom: 2px solid transparent; color: var(--muted);
+    transition: color 0.12s ease, border-color 0.12s ease;
+    flex: 0 1 auto;
+  }
+  .details .tabs button:hover { color: var(--text); }
+  .details .tabs button.active {
+    color: var(--accent); border-bottom-color: var(--accent);
+  }
+  .details .panel { padding: 14px 16px; }
+  .details dt {
+    font-size: 10px; letter-spacing: 0.06em; font-weight: var(--fw-sem);
+  }
+  .details dd { font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+
+  .log-pane { font-size: 11.5px; line-height: 1.55; }
+  .log-entry .ts { font-variant-numeric: tabular-nums; }
+
+  /* ── Empty states ── */
+  .empty {
+    padding: 56px 24px; color: var(--muted); font-size: var(--fs-md);
+    line-height: 1.55;
+  }
+  .chat-body > .empty::before {
+    content: "";
+    display: block; width: 56px; height: 56px; margin: 0 auto 14px;
+    border-radius: var(--r-pill); background: var(--accent-soft);
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%231f6feb' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'><path d='M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8z'/></svg>");
+    background-repeat: no-repeat; background-position: center;
+    background-size: 26px 26px;
+  }
+
+  /* ── Modal polish ── */
+  .modal { border-radius: var(--r-lg); box-shadow: var(--shadow-3); }
+  .modal .modal-header { padding: 14px 18px; }
+  .modal .modal-header .title { font-size: var(--fs-lg); }
+  .modal .modal-body { padding: 16px 18px; }
+  .modal .modal-footer { padding: 12px 18px; }
+  .modal button.primary {
+    border-radius: var(--r-sm); padding: 7px 16px; font-weight: var(--fw-sem);
+    transition: background 0.12s ease;
+  }
+  .modal button.primary:hover { background: var(--accent-hover); }
+  .modal button.secondary { border-radius: var(--r-sm); padding: 7px 16px; }
+  .modal .form-row input[type="text"],
+  .modal .form-row textarea {
+    border-radius: var(--r-sm); padding: 7px 10px;
+    background: var(--pane); color: var(--text);
+    transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  }
+  .modal .form-row input[type="text"]:focus,
+  .modal .form-row textarea:focus {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+
+  /* ── Scrollbars (WebView2 / Chromium) ── */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--n4); border-radius: var(--r-pill);
+    border: 2px solid transparent; background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: var(--n5); background-clip: padding-box; border: 2px solid transparent; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  .log-pane::-webkit-scrollbar-thumb { background: #3a4150; background-clip: padding-box; border: 2px solid transparent; }
+
+  /* ═══════════════════════════════════════════════════════════════
+     BOLDER PASS — visual hierarchy, depth, avatars, info card.
+     Appended after the polish layer so it overrides where needed.
+     ═══════════════════════════════════════════════════════════════ */
+
+  /* Tinted chat-body so bubbles have somewhere to sit, with a soft
+     vignette toward the side panes for depth. */
+  .chat-body {
+    background:
+      radial-gradient(ellipse at top, rgba(31, 111, 235, 0.04), transparent 60%),
+      linear-gradient(180deg, var(--n1) 0%, var(--n2) 100%);
+    padding: 24px 28px 16px;
+    gap: 6px;
+  }
+  @media (prefers-color-scheme: dark) {
+    .chat-body {
+      background:
+        radial-gradient(ellipse at top, rgba(75, 139, 245, 0.06), transparent 60%),
+        linear-gradient(180deg, var(--n2) 0%, #11141a 100%);
+    }
+  }
+
+  /* ── Avatar + assistant row ── */
+  .msg-row {
+    display: flex; gap: 10px; align-items: flex-end;
+    align-self: flex-start; max-width: 84%;
+    margin-top: 10px;
+  }
+  .msg-row.assistant + .msg-row.assistant { margin-top: 4px; }
+  .msg-row.assistant + .msg-row.assistant .avatar { visibility: hidden; }
+
+  .avatar {
+    flex: none; width: 30px; height: 30px; border-radius: var(--r-pill);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: var(--fw-sem); letter-spacing: 0.02em;
+    color: #fff; user-select: none;
+    box-shadow: var(--shadow-1);
+  }
+  .avatar-agent {
+    background: linear-gradient(135deg, var(--accent), #6a3fd6);
+  }
+
+  /* Re-tighten the assistant bubble inside the new row */
+  .msg-row.assistant .msg.assistant {
+    margin: 0;
+    border-bottom-left-radius: 4px;
+    max-width: 100%;
+  }
+
+  /* User bubble: slightly tighter, subtle gradient for depth */
+  .msg.user {
+    margin-top: 10px;
+    background: linear-gradient(135deg, var(--accent) 0%, #1860d6 100%);
+    box-shadow: 0 1px 2px rgba(31, 111, 235, 0.30), 0 4px 12px rgba(31, 111, 235, 0.10);
+  }
+  .msg.user + .msg.user { margin-top: 4px; }
+
+  /* ── Top bar identity & breadcrumb ── */
+  .app { grid-template-rows: 52px 1fr; }
+  header.topbar {
+    background: linear-gradient(180deg, var(--pane), var(--n1));
+    box-shadow: 0 1px 0 var(--border);
+    border-bottom: 0;
+    padding: 0 16px;
+  }
+  header.topbar::before {
+    content: "";
+    display: inline-block; width: 24px; height: 24px;
+    border-radius: 7px; flex: none;
+    background:
+      /* Two connected nodes glyph (cowork metaphor), white on accent */
+      url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'><circle cx='8' cy='9' r='2.6'/><circle cx='16' cy='15' r='2.6'/><line x1='10' y1='10.5' x2='14' y2='13.5'/></svg>") center/16px no-repeat,
+      linear-gradient(135deg, var(--accent), #6a3fd6);
+    box-shadow: var(--shadow-1);
+    margin-right: 6px;
+  }
+
+  /* ── Thread list: chunkier, more legible ── */
+  aside.threads { background: var(--n1); }
+  .threads .tools { background: var(--n1); }
+  .threads .filters { background: var(--n1); }
+  .thread-item {
+    padding: 12px 14px 12px 14px;
+    margin: 2px 6px;
+    border-radius: var(--r-md);
+    border-bottom: 0;
+    transition: background 0.10s ease;
+  }
+  .thread-item:hover { background: var(--n2); }
+  .thread-item.active {
+    background: var(--accent-soft);
+    border-left: 0; padding-left: 14px;
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+  .thread-item.system {
+    background: transparent;
+    border-left: 0; padding-left: 14px;
+    box-shadow: none;
+  }
+  .thread-item.system .status-dot { background: var(--system); }
+  .thread-item.system.active {
+    background: var(--accent-soft);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     ICONS + MOTION — final layer.
+     ═══════════════════════════════════════════════════════════════ */
+
+  /* Inline SVG icons inside buttons */
+  .i {
+    width: 14px; height: 14px; flex: none;
+    stroke-width: 2;
+    vertical-align: -2px;
+  }
+  /* Buttons that have icons should align them with text */
+  header button,
+  .threads .tools button,
+  .details .tabs button,
+  .chat-input button {
+    display: inline-flex; align-items: center; justify-content: center;
+    gap: 6px;
+  }
+  .threads .tools button .i { width: 15px; height: 15px; }
+  .chat-input button#sendBtn .i { width: 15px; height: 15px; }
+
+  /* ── Motion: 150–200ms ease-out everywhere ── */
+  .thread-item, .msg-row, .msg, .info-card,
+  header button, .threads .tools button, .details .tabs button,
+  .modal button, .details .actions button,
+  .chat-input .composer-row, .chat-input button#sendBtn,
+  .chip, .topic-card, .speaker-validator, .topic-editor {
+    transition:
+      background-color 0.14s ease,
+      border-color 0.14s ease,
+      box-shadow 0.14s ease,
+      color 0.14s ease,
+      transform 0.10s ease,
+      opacity 0.14s ease;
+  }
+
+  /* Tab switch fade — all panels share this rule */
+  .details .panel:not(.hidden) {
+    animation: paneFadeIn 0.18s ease-out;
+  }
+  @keyframes paneFadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* New message slide-in (covers both bare bubbles and avatar rows) */
+  .chat-body > .msg,
+  .chat-body > .msg-row {
+    animation: msgSlideIn 0.22s cubic-bezier(0.2, 0.7, 0.2, 1);
+  }
+  @keyframes msgSlideIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Modal fade + scale */
+  .modal-backdrop { transition: opacity 0.16s ease; }
+  .modal-backdrop:not(.open) { opacity: 0; pointer-events: none; }
+  .modal-backdrop.open .modal {
+    animation: modalIn 0.18s cubic-bezier(0.2, 0.7, 0.2, 1);
+  }
+  @keyframes modalIn {
+    from { opacity: 0; transform: translateY(8px) scale(0.98); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+  }
+
+  /* Subtle press feedback on every clickable button */
+  header button:active,
+  .threads .tools button:active,
+  .details .tabs button:active,
+  .modal button:active,
+  .details .actions button:active,
+  .chat-input button#sendBtn:active {
+    transform: translateY(1px);
+  }
+
+  /* Avatar pop on appear */
+  .msg-row .avatar { animation: avatarPop 0.28s cubic-bezier(0.2, 0.9, 0.3, 1.2); }
+  @keyframes avatarPop {
+    from { opacity: 0; transform: scale(0.6); }
+    to   { opacity: 1; transform: scale(1); }
+  }
+
+  /* Reduce motion respected */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.001s !important;
+      transition-duration: 0.001s !important;
+    }
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     PRODUCT-LEVEL PASS — breadcrumb, capped chat, timeline.
+     ═══════════════════════════════════════════════════════════════ */
+
+  /* Top bar: breadcrumb sits between app name and identity */
+  header.topbar .title { flex: none; }
+  header.topbar .breadcrumb {
+    flex: 1; min-width: 0;
+    color: var(--muted); font-size: var(--fs-md); font-weight: var(--fw-med);
+    text-align: center;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    padding: 0 16px;
+  }
+  header.topbar .breadcrumb::before {
+    content: "/"; color: var(--n4); margin-right: 12px; font-weight: 400;
+  }
+  header.topbar .breadcrumb:empty::before { content: ""; }
+  header.topbar .user { flex: none; }
+
+  /* Cap chat column width and center it so very wide windows still read well.
+     Uses CSS variables so the same gutters apply consistently. */
+  .chat-body {
+    --chat-max: 820px;
+    padding-left: max(28px, calc((100% - var(--chat-max)) / 2));
+    padding-right: max(28px, calc((100% - var(--chat-max)) / 2));
+    align-items: stretch;
+  }
+  /* User bubbles flush right within the centered column */
+  .chat-body > .msg.user { align-self: flex-end; max-width: 70%; }
+  /* Assistant rows flush left within the centered column */
+  .chat-body > .msg-row.assistant { align-self: flex-start; max-width: 85%; }
+  .msg-row.assistant .msg.assistant { max-width: 100%; }
+  /* Live status / empty placeholders span the column */
+  .chat-body > .live-status,
+  .chat-body > .empty { align-self: stretch; }
+
+  /* ── Timeline (Progress tab) ── */
+  .timeline {
+    position: relative;
+    padding: 4px 4px 4px 0;
+  }
+  .timeline::before {
+    content: "";
+    position: absolute;
+    left: 11px; top: 8px; bottom: 8px;
+    width: 2px;
+    background: linear-gradient(180deg, var(--border-strong), var(--border));
+    border-radius: 1px;
+  }
+  .tl-item {
+    position: relative;
+    display: grid;
+    grid-template-columns: 24px 1fr;
+    gap: 10px;
+    padding: 4px 0 12px;
+  }
+  .tl-dot {
+    position: relative; z-index: 1;
+    width: 24px; height: 24px; border-radius: var(--r-pill);
+    background: var(--pane);
+    border: 1.5px solid var(--border-strong);
+    display: inline-flex; align-items: center; justify-content: center;
+    color: var(--muted);
+    box-shadow: 0 0 0 3px var(--n1);
+  }
+  .tl-dot svg { width: 13px; height: 13px; }
+  .tl-body { min-width: 0; padding-top: 1px; }
+  .tl-meta {
+    display: flex; gap: 8px; align-items: baseline;
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--muted); margin-bottom: 3px;
+  }
+  .tl-time {
+    font-variant-numeric: tabular-nums; font-weight: var(--fw-sem);
+    color: var(--text); min-width: 50px;
+  }
+  .tl-time:empty { visibility: hidden; }
+  .tl-kind { font-weight: var(--fw-med); }
+  .tl-text {
+    font-size: var(--fs-sm); line-height: 1.5; color: var(--text);
+    /* Allow horizontal scroll for wide markdown tables / code blocks rather
+       than letting them wrap into single-character columns. */
+    overflow-x: auto;
+    max-width: 100%;
+  }
+  .tl-text > *:first-child { margin-top: 0; }
+  .tl-text > *:last-child  { margin-bottom: 0; }
+  .tl-text table { border-collapse: collapse; min-width: max-content; font-size: 12px; }
+  .tl-text th, .tl-text td {
+    border: 1px solid var(--border);
+    padding: 4px 8px; text-align: left; vertical-align: top;
+    white-space: nowrap;
+  }
+  .tl-text pre { overflow-x: auto; }
+  /* The Progress pane itself can overflow horizontally if a table is huge */
+  #panel-progress { overflow-x: auto; }
+
+  /* Per-kind color */
+  .tl-item.kind-milestone .tl-dot {
+    background: rgba(31, 136, 61, 0.14); color: #1f883d;
+    border-color: rgba(31, 136, 61, 0.40);
+  }
+  .tl-item.kind-tool .tl-dot {
+    background: rgba(31, 111, 235, 0.10); color: var(--accent);
+    border-color: rgba(31, 111, 235, 0.30);
+  }
+  .tl-item.kind-agent .tl-dot {
+    background: rgba(102, 57, 186, 0.10); color: var(--system);
+    border-color: rgba(102, 57, 186, 0.30);
+  }
+  .tl-item.kind-progress .tl-dot {
+    background: var(--n2); color: var(--n6);
+  }
+  .tl-item.kind-step .tl-dot {
+    background: var(--pane); color: var(--muted);
+  }
+  .tl-item.kind-error .tl-dot {
+    background: rgba(207, 34, 46, 0.10); color: var(--failed);
+    border-color: rgba(207, 34, 46, 0.40);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .timeline::before {
+      background: linear-gradient(180deg, var(--border-strong), var(--border));
+    }
+    .tl-dot { box-shadow: 0 0 0 3px var(--n1); }
+  }
+  .thread-item .status-dot { width: 9px; height: 9px; }
+  .thread-item .title { font-size: 13.5px; }
+  .thread-item .meta { margin-top: 2px; opacity: 0.85; }
+
+  /* ── Chat header: more presence ── */
+  .chat-header {
+    padding: 14px 22px;
+    background: linear-gradient(180deg, var(--pane), var(--n1));
+    box-shadow: 0 1px 0 var(--border);
+    border-bottom: 0;
+  }
+  .chat-header .title { font-size: 16px; }
+
+  /* ── Right pane: card-style Info ── */
+  section.details { background: var(--n1); }
+  .details .tabs { background: var(--pane); }
+  .info-card {
+    background: var(--pane);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    padding: 14px 16px;
+    box-shadow: var(--shadow-1);
+    margin-bottom: 12px;
+  }
+  .info-card-head {
+    display: flex; flex-direction: column; gap: 4px;
+    padding-bottom: 10px; margin-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  .info-card-title {
+    font-size: var(--fs-lg); font-weight: var(--fw-sem);
+    line-height: 1.3; letter-spacing: -0.01em;
+  }
+  .info-card-tag {
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: var(--fs-xs); color: var(--muted);
+  }
+  .info-card dl {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    column-gap: 14px; row-gap: 8px;
+    margin: 0;
+  }
+  .info-card dt {
+    font-size: 10px; letter-spacing: 0.06em;
+    font-weight: var(--fw-sem); text-transform: uppercase;
+    color: var(--muted); margin: 0;
+    align-self: center;
+  }
+  .info-card dd {
+    margin: 0; font-size: var(--fs-sm); color: var(--text);
+    font-family: var(--font); font-variant-numeric: tabular-nums;
+    word-break: break-word;
+  }
+
+  .details .actions { padding: 0 2px; }
+  .details .actions button {
+    border-radius: var(--r-sm); padding: 7px 14px;
+    font-size: var(--fs-sm); font-weight: var(--fw-med);
+    background: var(--pane); border: 1px solid var(--border-strong);
+    transition: background 0.12s ease;
+  }
+  .details .actions button:hover { background: var(--n2); }
+  .details .actions button.danger {
+    background: var(--pane); color: var(--failed);
+    border-color: rgba(207, 34, 46, 0.30);
+  }
+  .details .actions button.danger:hover { background: rgba(207, 34, 46, 0.08); }
+
+  /* ── Composer card sits on its own surface ── */
+  .chat-input { background: var(--n1); }
+
+  /* ── Settings button as pill ── */
+  header button#configBtn,
+  header button#signinBtn {
+    background: var(--pane); color: var(--text);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-pill); padding: 5px 14px;
+    font-weight: var(--fw-med);
+  }
+  header button#configBtn:hover,
+  header button#signinBtn:hover { background: var(--n2); }
+
+  /* Make sure the live shimmer status sits under the avatar column too */
+  .live-status { padding-left: 40px; }
+
+  @media (prefers-color-scheme: dark) {
+    .msg.user {
+      background: linear-gradient(135deg, var(--accent) 0%, #2a5fc7 100%);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 12px rgba(0, 0, 0, 0.25);
+    }
+    .info-card { background: var(--pane); }
+    aside.threads, .threads .tools, .threads .filters,
+    section.details, .chat-input { background: var(--n1); }
+    .details .tabs, .chat-header { background: var(--pane); }
+    .details .actions button { background: var(--pane); }
+    .details .actions button:hover { background: rgba(255,255,255,0.04); }
+  }

@@ -65,6 +65,7 @@ logger = logging.getLogger("hub_se_agent")
 from hub_cowork.core.agent_core import (
     run_agent, run_skill, check_azure_auth, run_az_login, reset_qa_history,
     get_loaded_skills, route, get_skill, get_credential, run_agent_on_thread,
+    generate_thread_title,
 )
 from hub_cowork.core.outlook_helper import _resolve_organizer
 from hub_cowork.core.thread_manager import (
@@ -234,6 +235,20 @@ def _create_new_thread(user_input: str, source: str = "ui",
     request_id = uuid.uuid4().hex[:8]
     pool.submit(thread.id, user_input, request_id=request_id)
     _broadcast({"type": "thread_created", "thread": _ws_thread_summary(thread)})
+    # Generate a nicer LLM-derived title in the background so the initial
+    # broadcast (which uses the raw user input) returns immediately.
+    def _retitle(tid: str, text: str) -> None:
+        try:
+            new_title = generate_thread_title(text)
+            if not new_title:
+                return
+            tm.update_title(tid, new_title)
+            t = tm.get(tid)
+            if t is not None:
+                _broadcast({"type": "thread_updated", "thread": _ws_thread_summary(t)})
+        except Exception as e:
+            logger.warning("Background title generation failed for %s: %s", tid, e)
+    threading.Thread(target=_retitle, args=(thread.id, user_input), daemon=True).start()
     return thread.id
 
 

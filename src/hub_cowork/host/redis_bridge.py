@@ -364,6 +364,17 @@ class RedisBridge:
         except Exception as e:
             logger.error("Router failed for remote message: %s", e, exc_info=True)
 
+        # Background LLM-derived title (does not block the dispatch).
+        def _retitle(tid: str, msg: str) -> None:
+            try:
+                from hub_cowork.core.agent_core import generate_thread_title
+                new_title = generate_thread_title(msg)
+                if new_title:
+                    tm.update_title(tid, new_title)
+            except Exception as e:
+                logger.warning("Background title gen failed for %s: %s", tid, e)
+        threading.Thread(target=_retitle, args=(thread.id, text), daemon=True).start()
+
         request_id = uuid.uuid4().hex[:8]
         with self._pending_lock:
             self._pending_replies[request_id] = (msg_id, thread.id)

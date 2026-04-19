@@ -197,6 +197,13 @@ function threadItemEl(t, isSystem) {
   title.className = "title";
   title.textContent = t.title || "(untitled)";
   row1.appendChild(title);
+  if (!isSystem && t.created_at) {
+    const time = document.createElement("span");
+    time.className = "time";
+    time.textContent = formatRelativeTime(t.created_at);
+    time.title = new Date(t.created_at * 1000).toLocaleString();
+    row1.appendChild(time);
+  }
   d.appendChild(row1);
 
   const meta = document.createElement("div");
@@ -208,6 +215,20 @@ function threadItemEl(t, isSystem) {
   meta.textContent = parts.join(" · ");
   d.appendChild(meta);
   return d;
+}
+
+// Compact relative time for thread list rows. Input is unix seconds.
+function formatRelativeTime(unixSec) {
+  if (!unixSec) return "";
+  const now = Date.now() / 1000;
+  const diff = Math.max(0, now - unixSec);
+  if (diff < 60)        return "just now";
+  if (diff < 3600)      return Math.floor(diff / 60) + "m";
+  if (diff < 86400)     return Math.floor(diff / 3600) + "h";
+  if (diff < 7 * 86400) return Math.floor(diff / 86400) + "d";
+  // Older: show short date.
+  const d = new Date(unixSec * 1000);
+  return d.toLocaleDateString(undefined, {month: "short", day: "numeric"});
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -249,11 +270,14 @@ function renderSelectedHeader() {
   const tag = document.getElementById("chatTag");
   const title = document.getElementById("chatTitle");
   const status = document.getElementById("chatStatus");
+  const crumb = document.getElementById("breadcrumb");
+  const setCrumb = (txt) => { if (crumb) crumb.textContent = txt || ""; };
   if (state.selectedId === SYSTEM_THREAD_ID) {
     tag.textContent = "#system";
     title.textContent = "System · cross-task queries";
     status.textContent = "ready";
     status.className = "status-label";
+    setCrumb("System");
     updateComposerLockState();
     return;
   }
@@ -262,15 +286,17 @@ function renderSelectedHeader() {
     title.textContent = "New task";
     status.textContent = "draft";
     status.className = "status-label";
+    setCrumb("New task");
     updateComposerLockState();
     return;
   }
   const t = state.threads.get(state.selectedId) || state.archivedThreads.get(state.selectedId);
-  if (!t) { tag.textContent = ""; title.textContent = "(not found)"; updateComposerLockState(); return; }
+  if (!t) { tag.textContent = ""; title.textContent = "(not found)"; setCrumb(""); updateComposerLockState(); return; }
   tag.textContent = t.correlation_tag || ("#thread-" + t.id);
   title.textContent = t.title || "(untitled)";
   status.textContent = t.status || "unknown";
   status.className = "status-label " + (t.status || "");
+  setCrumb(t.title || "(untitled)");
   updateComposerLockState();
 }
 
@@ -357,7 +383,23 @@ function appendMsg(role, text) {
     t.textContent = text;
   }
   d.appendChild(t);
-  body.appendChild(d);
+
+  // Wrap assistant messages in a row with a monogram avatar so the
+  // conversation has a visual anchor on the left. User messages remain
+  // bare and right-aligned — the colour + alignment already identify them.
+  if (role === "assistant") {
+    const row = document.createElement("div");
+    row.className = "msg-row assistant";
+    const av = document.createElement("div");
+    av.className = "avatar avatar-agent";
+    av.textContent = "H";
+    av.title = "Hub Cowork";
+    row.appendChild(av);
+    row.appendChild(d);
+    body.appendChild(row);
+  } else {
+    body.appendChild(d);
+  }
   scrollChatToEnd();
 }
 
@@ -573,6 +615,16 @@ function onInputKey(e) {
     e.preventDefault();
     sendInput();
   }
+  // Reflect "has text" on the wrapper so the send button lights up.
+  // Deferred to allow the keypress to update the textarea value first.
+  setTimeout(updateComposerHasInput, 0);
+}
+
+function updateComposerHasInput() {
+  const wrap = document.getElementById("chatInput");
+  const box = document.getElementById("inputBox");
+  if (!wrap || !box) return;
+  wrap.classList.toggle("has-input", !!box.value.trim());
 }
 
 function sendInput() {
@@ -580,6 +632,7 @@ function sendInput() {
   const text = box.value.trim();
   if (!text) return;
   box.value = "";
+  updateComposerHasInput();
   if (state.selectedId === SYSTEM_THREAD_ID) {
     appendMsg("user", text);
     state.systemMessages.push({role: "user", content: text});
@@ -673,18 +726,33 @@ function renderDetails() {
   }
 
   info.innerHTML = "";
+  const card = document.createElement("div");
+  card.className = "info-card";
+  const head = document.createElement("div");
+  head.className = "info-card-head";
+  const headTitle = document.createElement("div");
+  headTitle.className = "info-card-title";
+  headTitle.textContent = t.title || "(untitled)";
+  const headTag = document.createElement("div");
+  headTag.className = "info-card-tag";
+  headTag.textContent = t.correlation_tag || ("#thread-" + t.id);
+  head.appendChild(headTitle);
+  head.appendChild(headTag);
+  card.appendChild(head);
+
   const dl = document.createElement("dl");
   const add = (k, v) => {
+    if (v == null || v === "") return;
     const dt = document.createElement("dt"); dt.textContent = k; dl.appendChild(dt);
-    const dd = document.createElement("dd"); dd.textContent = v == null ? "—" : String(v); dl.appendChild(dd);
+    const dd = document.createElement("dd"); dd.textContent = String(v); dl.appendChild(dd);
   };
-  add("Correlation tag", t.correlation_tag || ("#thread-" + t.id));
   add("Status", t.status);
   add("Skill", t.skill_name);
   add("Source", t.source);
   if (t.external_user) add("External user", t.external_user);
   if (t.created_at) add("Created", new Date(t.created_at * 1000).toLocaleString());
-  info.appendChild(dl);
+  card.appendChild(dl);
+  info.appendChild(card);
 
   const actions = document.createElement("div");
   actions.className = "actions";
@@ -697,36 +765,68 @@ function renderDetails() {
   }
   info.appendChild(actions);
 
-  // Progress panel
+  // Progress panel — vertical timeline with kind icons, grouped by minute,
+  // duplicate timestamps suppressed.
   prog.innerHTML = "";
   const steps = t.progress_log || [];
   if (!steps.length) {
     prog.innerHTML = '<div class="empty">No progress events yet.</div>';
   } else {
+    const tl = document.createElement("div");
+    tl.className = "timeline";
+    let lastMinute = "";
     for (const step of steps) {
       // Server persists entries as {ts, kind, message, request_id}; older
       // client-side pushes may have used [ts, kind, msg] tuples. Handle both.
       const ts   = Array.isArray(step) ? step[0] : step.ts;
       const kind = Array.isArray(step) ? step[1] : step.kind;
       const msg  = Array.isArray(step) ? step[2] : step.message;
-      const row = document.createElement("div");
-      row.style.cssText = "font-size:12px;padding:6px 0;border-bottom:1px solid var(--border);";
-      const time = new Date((ts || 0) * 1000).toLocaleTimeString();
-      // Native tooltip with the full untruncated message on hover.
-      row.title = String(msg ?? "");
-      const head = document.createElement("div");
-      head.style.cssText = "color:var(--muted);margin-bottom:2px;";
-      head.textContent = `${time} · ${kind}`;
-      const bodyEl = document.createElement("div");
-      bodyEl.className = "md";
-      // Render markdown so bold, lists, tables, code, and links display
-      // properly. The raw original is still available via row.title.
-      bodyEl.innerHTML = renderMarkdown(String(msg ?? ""));
-      row.appendChild(head);
-      row.appendChild(bodyEl);
-      prog.appendChild(row);
+      const date = new Date((ts || 0) * 1000);
+      const time = date.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
+      const fullTime = date.toLocaleTimeString();
+      const showTime = time !== lastMinute;
+      lastMinute = time;
+
+      const item = document.createElement("div");
+      item.className = "tl-item kind-" + (kind || "info");
+      item.title = String(msg ?? "");
+
+      const dot = document.createElement("div");
+      dot.className = "tl-dot";
+      dot.innerHTML = timelineIcon(kind);
+      item.appendChild(dot);
+
+      const body = document.createElement("div");
+      body.className = "tl-body";
+      const meta = document.createElement("div");
+      meta.className = "tl-meta";
+      meta.innerHTML =
+        `<span class="tl-time" title="${fullTime}">${showTime ? time : ""}</span>` +
+        `<span class="tl-kind">${kind || "info"}</span>`;
+      body.appendChild(meta);
+      const txt = document.createElement("div");
+      txt.className = "tl-text md";
+      txt.innerHTML = renderMarkdown(String(msg ?? ""));
+      body.appendChild(txt);
+      item.appendChild(body);
+      tl.appendChild(item);
     }
+    prog.appendChild(tl);
   }
+}
+
+// Inline SVG icons for each progress kind. Kept tiny so the timeline dots
+// stay 18px. Stroke uses currentColor so kind-* CSS rules can recolor.
+function timelineIcon(kind) {
+  const ic = {
+    progress:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>',
+    step:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>',
+    tool:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.5-2.5z"/></svg>',
+    agent:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="6" width="16" height="12" rx="3"/><circle cx="9" cy="12" r="1.2" fill="currentColor"/><circle cx="15" cy="12" r="1.2" fill="currentColor"/></svg>',
+    milestone: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
+    error:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
+  };
+  return ic[kind] || '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3" fill="currentColor"/></svg>';
 }
 
 function renderLogs() {
@@ -1851,6 +1951,14 @@ function escapeHtml(s) {
 function renderMarkdown(src) {
   if (!src) return "";
   src = String(src).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+
+  // Strip internal control-flow markers that may have leaked into older
+  // persisted messages. New messages already have these stripped server-side
+  // (see agent_core.py); this is a defensive cleanup for historical threads.
+  src = src.replace(/\[AWAITING_CONFIRMATION\]/g, "")
+           .replace(/\[STOP_CHAIN\]/g, "")
+           .replace(/\n{3,}/g, "\n\n")
+           .trim();
 
   // 1. Extract fenced code blocks first so their contents are not processed.
   const codeBlocks = [];

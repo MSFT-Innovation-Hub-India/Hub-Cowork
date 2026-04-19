@@ -481,6 +481,52 @@ _INBOX_CLASSIFIER_PROMPT = (
 )
 
 
+_TITLE_GEN_PROMPT = (
+    "You write very short titles for chat threads. Given a user's first "
+    "message, return a 3 to 6 word title that captures the intent. "
+    "Rules:\n"
+    "  • No quotes, no trailing punctuation.\n"
+    "  • Use Title Case.\n"
+    "  • Drop filler words (please, can you, I want to, etc.).\n"
+    "  • Prefer concrete nouns: customer name, document type, action.\n"
+    "  • Max ~40 characters.\n"
+    "Return ONLY the title text, nothing else."
+)
+
+
+def generate_thread_title(user_input: str) -> str:
+    """Use the mini model to produce a short title for a new thread.
+
+    Returns a fallback truncation of the user input if the LLM call fails
+    or returns something unusable.
+    """
+    fallback = (user_input or "").strip().splitlines()[0][:60] if user_input else ""
+    text = (user_input or "").strip()
+    if not text:
+        return fallback or "New conversation"
+    try:
+        client = get_responses_client()
+        resp = client.responses.create(
+            model=CHAT_MODEL_SMALL,
+            instructions=_TITLE_GEN_PROMPT,
+            input=[{"role": "user", "content": text[:2000]}],
+            tools=[],
+        )
+        out = ""
+        for item in resp.output:
+            if item.type == "message":
+                for part in item.content:
+                    if part.type == "output_text":
+                        out += part.text
+        title = out.strip().strip('"').strip("'").rstrip(".").strip()
+        # First line only, hard cap
+        title = title.splitlines()[0][:60] if title else ""
+        return title or fallback or "New conversation"
+    except Exception as e:
+        logger.warning("[TitleGen] Title generation failed: %s — using fallback", e)
+        return fallback or "New conversation"
+
+
 def classify_inbox(text: str, active_threads_summary: list[dict]) -> dict:
     """Classify an incoming remote message against the user's active threads.
 
@@ -706,11 +752,20 @@ def _run_skill(skill: "Skill", thread, user_input: str,
     # Persist the latest response id for future follow-ups.
     tm.set_previous_response_id(thread.id, response.id)
 
+    # Strip control-flow markers BEFORE persisting so the saved transcript
+    # never shows them. (The markers are still inspected below to drive
+    # session/chaining state; just not stored as part of the visible reply.)
+    persisted_text = final_text
+    if persisted_text:
+        for _marker in ("[AWAITING_CONFIRMATION]", "[STOP_CHAIN]"):
+            persisted_text = persisted_text.replace(_marker, "")
+        persisted_text = persisted_text.strip()
+
     # Save assistant reply to the thread's conversation history.
     # Persisted for both conversational and one-shot skills so the UI can
     # re-render the full transcript after any get_thread round-trip.
-    if final_text:
-        tm.append_message(thread.id, "assistant", final_text,
+    if persisted_text:
+        tm.append_message(thread.id, "assistant", persisted_text,
                           request_id=thread.last_request_id)
 
     # --- Active session & chaining logic (all thread-scoped) ---
@@ -721,7 +776,7 @@ def _run_skill(skill: "Skill", thread, user_input: str,
             "skill_name": skill.name, "stage": "awaiting_confirmation",
         })
         tm.set_status(thread.id, "awaiting_user")
-        final_text = final_text.replace("[AWAITING_CONFIRMATION]", "").strip()
+        final_text = persisted_text
         logger.info("[%s/%s] Awaiting user confirmation", thread.id, skill.name)
         return final_text
 

@@ -9,18 +9,31 @@
 <div class="app">
   <header class="topbar">
     <span class="title">Hub Cowork</span>
+    <span class="breadcrumb" id="breadcrumb"></span>
     <span class="user">
       <span id="authDot" class="dot"></span>
       <span id="authText">Checking auth…</span>
     </span>
-    <button id="signinBtn" class="secondary" style="display:none" onclick="signin()">Sign in to Azure</button>
-    <button id="configBtn" class="secondary" onclick="openConfig()">Settings</button>
+    <button id="signinBtn" class="secondary" style="display:none" onclick="signin()">
+      <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+      Sign in to Azure
+    </button>
+    <button id="configBtn" class="secondary" onclick="openConfig()">
+      <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      Settings
+    </button>
   </header>
 
   <aside class="threads">
     <div class="tools">
-      <button class="primary" onclick="newThread()">+ New task</button>
-      <button onclick="toggleArchivedFilter()" id="archToggle">Show archived</button>
+      <button class="primary" onclick="newThread()">
+        <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        New task
+      </button>
+      <button onclick="toggleArchivedFilter()" id="archToggle">
+        <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+        Archived
+      </button>
     </div>
     <div class="filters">
       <label><input type="checkbox" id="filterRunning" checked onchange="renderThreadList()"> Running</label>
@@ -47,17 +60,29 @@
       <div class="composer-notice" id="composerNotice"></div>
       <div class="composer-row">
         <textarea id="inputBox" placeholder="Type a message — Shift+Enter for newline"
-                  onkeydown="onInputKey(event)" rows="1"></textarea>
-        <button id="sendBtn" onclick="sendInput()">Send</button>
+                  onkeydown="onInputKey(event)" oninput="updateComposerHasInput()" rows="1"></textarea>
+        <button id="sendBtn" onclick="sendInput()" title="Send (Enter)">
+          <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          Send
+        </button>
       </div>
     </div>
   </main>
 
   <section class="details">
     <div class="tabs">
-      <button class="active" data-tab="info" onclick="switchTab('info')">Info</button>
-      <button data-tab="progress" onclick="switchTab('progress')">Progress</button>
-      <button data-tab="logs" onclick="switchTab('logs')">Logs</button>
+      <button class="active" data-tab="info" onclick="switchTab('info')">
+        <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        Info
+      </button>
+      <button data-tab="progress" onclick="switchTab('progress')">
+        <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        Progress
+      </button>
+      <button data-tab="logs" onclick="switchTab('logs')">
+        <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+        Logs
+      </button>
     </div>
     <div class="panel" id="panel-info">
       <div class="empty">No task selected.</div>
