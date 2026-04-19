@@ -205,25 +205,65 @@ Greetings and small talk are handled directly by the router (classified as `"non
 
 ## Hub Configuration & Settings UI
 
-Hub-specific settings are stored as JSON and editable through the chat UI.
+There are **two distinct stores** of settings, used for different purposes:
+
+### 1. Hub config (JSON) — application data
+
+Things the agent reads as structured data via the `get_hub_config` tool: hub name, default session start time, topic catalog, agenda output folder, agenda template path, etc.
 
 ```
-src/hub_cowork/assets/hub_config.default.json   ← Shipped defaults
-          │
-          │  hub_config.load() merges:
-          │    defaults  ← hub_config.default.json (inside the package)
-          │    overrides ← ~/.hub-cowork/hub_config.json (user edits)
-          │
-          ▼
-       Merged config returned to caller
+src/hub_cowork/assets/hub_config.default.json    ← Shipped defaults (in the wheel)
+~/.hub-cowork/hub_config.json                    ← User overrides (created on first Save)
+
+hub_config.load() returns:  defaults  ⊕  user overrides   (user wins per-key)
 ```
 
-The ⚙ gear icon in the chat header opens a settings modal with two sections:
+### 2. Environment variables — endpoints, model names, secrets
 
-- **Hub settings** — hub name, default session start time, speakers by topic, agenda output folder, optional agenda template `.docx` path.
-- **Environment variables** — any value from the app's environment (endpoints, model names, Redis, feature toggles). Saved values are written to the `_env_overrides` map in `~/.hub-cowork/hub_config.json` and applied on restart. Precedence (highest first): `_env_overrides` → user `.env` in the working dir → packaged `src/hub_cowork/assets/.env.defaults`.
+Things the code reads as `os.environ["..."]` at startup: Azure OpenAI endpoint, model deployment names, ACS endpoint, Redis endpoint, FoundryIQ / Foundry project endpoints, RFP output folder, RFP share recipients, Graph credentials, etc.
 
-After changing env values the UI offers a one-click restart.
+These come from **three layers**, applied in this precedence (highest first):
+
+| # | Source | Where it lives | When it wins |
+|---|---|---|---|
+| 1 | `_env_overrides` (Settings UI) | `~/.hub-cowork/hub_config.json` under the `_env_overrides` key | Always wins if the value is a non-empty string |
+| 2 | User `.env` file | The current working directory when you launch the app | Wins over packaged defaults if layer 1 didn't set the key |
+| 3 | Packaged `.env.defaults` | `src/hub_cowork/assets/.env.defaults` (shipped in the wheel) | Last-resort fallback so the app boots even with no user setup |
+
+**How it's wired** (see [`src/hub_cowork/__main__.py`](src/hub_cowork/__main__.py)):
+
+```python
+_apply_env_overrides()   # 1. Promote _env_overrides into os.environ
+_load_env_files()        # 2. load_dotenv(.env, override=False)
+                         # 3. load_dotenv(assets/.env.defaults, override=False)
+```
+
+`override=False` is the key — once a value is in `os.environ` it cannot be downgraded by a lower-precedence source.
+
+### What goes where?
+
+| Setting | Where | Read by |
+|---|---|---|
+| `hub_name`, `topic_catalog`, `default_session_start_time`, `agenda_output_folder`, `agenda_template_path` | Hub config (top level of `hub_config.json`) | Skills, via `get_hub_config` tool |
+| `AZURE_OPENAI_*`, `ACS_*`, `AZURE_TENANT_ID`, `AZ_REDIS_CACHE_ENDPOINT`, `REDIS_*`, `FOUNDRYIQ_*`, `FOUNDRY_*`, `GRAPH_*`, `RFP_OUTPUT_FOLDER`, `RFP_SHARE_RECIPIENTS`, `WORKIQ_PATH` | Env vars (any of the 3 layers above) | Anywhere via `os.environ`, plus `get_hub_config` (see consistency note) |
+
+### One consistent read path (consistency note)
+
+All callers — Python modules and skills alike — see env-var values from the same merged view, regardless of which layer set them:
+
+- **Python code** (e.g. `agent_core.py`, `redis_bridge.py`, `create_rfp_brief_doc.py`) reads `os.environ["FOO"]`. Because `__main__.py` promotes `_env_overrides` into `os.environ` *before* importing the agent host, every layer is visible through this one syscall.
+- **Skill instructions** that need a value through the LLM call the `get_hub_config` tool. That tool flattens any non-empty `_env_overrides` entries on top of the hub-config JSON before returning, so the LLM sees the same effective value the Python code does.
+
+**Net result:** there is exactly **one source of truth per env var**, computed at boot, regardless of whether the value originated in the Settings UI, a local `.env`, or the packaged defaults. No skill or module has its own fallback chain.
+
+### Settings UI
+
+The ⚙ gear icon in the chat header opens a modal with two sections:
+
+- **Hub settings** — top-level keys in `hub_config.json` (hub name, default session start time, speakers by topic, agenda output folder, agenda template path).
+- **Environment variables** — the env editor. Every value typed here is saved to the `_env_overrides` map in `~/.hub-cowork/hub_config.json` and applied to `os.environ` on the next launch (the UI offers a one-click restart).
+
+After changing env values you need to restart so module-level reads (e.g. `ENDPOINT = os.environ[...]`) pick up the new values. Hub-config edits are picked up live by the next `get_hub_config` call.
 
 ---
 

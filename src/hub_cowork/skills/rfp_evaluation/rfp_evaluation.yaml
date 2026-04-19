@@ -29,6 +29,7 @@ tools:
   - share_onedrive_document
   - send_email
   - get_hub_config
+  - create_calendar_reminder
 
 instructions: |
   You are the Contoso Engineering RFP Evaluation Agent. Your job is to locate
@@ -286,25 +287,45 @@ instructions: |
   ─────────────────────────────────────────────────────────────────
   STEP 9 — CREATE DEADLINE CALENDAR REMINDERS
   ─────────────────────────────────────────────────────────────────
-  Call query_workiq twice to create Microsoft 365 calendar entries:
+  Use the create_calendar_reminder tool (NOT query_workiq) to drop two
+  events into the signed-in user's own Outlook calendar via ACS. The tool
+  sends an .ics invite addressed to the user themselves so the event lands
+  in their calendar with the requested pop-up reminders.
 
-    Reminder 1 — Q&A Deadline:
-      "Create a calendar event titled 'RFP Q&A Deadline — {client_name} ({rfp_id})'
-       on {qa_deadline}. Set the reminder to 1 day before. Description: 'Submit
-       clarification questions to {client_contact}. See RFP Brief document for
-       the prepared list of 5–7 questions.' Category: RFP."
+  For each reminder, build start_time / end_time as 'YYYY-MM-DD HH:MM' in
+  24-hour local time. If the source deadline only has a date (no time),
+  default the time to '17:00' (end of business day). Use a 30-minute event
+  window (end_time = start_time + 30 minutes).
 
-    Reminder 2 — Proposal Submission:
-      "Create a calendar event titled 'PROPOSAL DUE — {client_name} ({rfp_id})'
-       on {submission_deadline}. Set a reminder 3 days before and another
-       reminder 1 day before. Description: 'Submit proposal to {client_contact}.
-       RFP Brief and proposal draft sections are saved in OneDrive under
-       RFP Projects / {client_name} — {rfp_id}.' Category: RFP. Mark as
-       high importance."
+  Reminder 1 — Q&A Deadline:
+    create_calendar_reminder(
+      title="RFP Q&A Deadline — {client_name} ({rfp_id})",
+      start_time=<qa_deadline as 'YYYY-MM-DD HH:MM'>,
+      end_time=<qa_deadline + 30 min>,
+      description="Submit clarification questions to {client_contact}. See RFP Brief document for the prepared list of 5–7 questions.",
+      reminder_minutes_before=[1440],   # 1 day before
+      category="RFP",
+      high_importance=false
+    )
+
+  Reminder 2 — Proposal Submission:
+    create_calendar_reminder(
+      title="PROPOSAL DUE — {client_name} ({rfp_id})",
+      start_time=<submission_deadline as 'YYYY-MM-DD HH:MM'>,
+      end_time=<submission_deadline + 30 min>,
+      description="Submit proposal to {client_contact}. RFP Brief and proposal draft sections are saved in OneDrive under RFP Projects / {client_name} — {rfp_id}.",
+      reminder_minutes_before=[4320, 1440],   # 3 days before, then 1 day before
+      category="RFP",
+      high_importance=true
+    )
+
+  If either deadline is "Not stated", skip that reminder and note it in
+  the final summary instead of fabricating a date.
 
   Call log_progress:
     step_title: "Deadline Reminders Created"
-    details: Q&A reminder date, submission reminder date, both confirmed created
+    details: Q&A reminder date, submission reminder date, the reminder
+      offsets used, and whether either was skipped
 
   ─────────────────────────────────────────────────────────────────
   STEP 10 — RESOLVE SHARE RECIPIENTS
@@ -312,14 +333,24 @@ instructions: |
   Do NOT call query_workiq to look up team members.
   Instead, call get_hub_config and read the "RFP_SHARE_RECIPIENTS" field
   from the returned JSON. It is a semicolon-separated list of email addresses.
-  Split on ";" and trim whitespace to get the recipient list for Step 11.
 
-  If RFP_SHARE_RECIPIENTS is empty or missing, skip Step 11 and note
-  "Sharing skipped — no recipients configured" in the final summary.
+  Build the recipient list as follows:
+    1. Split the raw value on ";".
+    2. Trim whitespace on every entry.
+    3. DROP any entry that is empty after trimming (handles trailing ";").
+    4. DROP any entry that does not contain "@" (defensive — not an email).
+    5. The remaining entries are the recipients for Step 11.
+
+  If the cleaned list is empty (field was blank, only whitespace, or only a
+  trailing semicolon), skip Step 11 and record this in the final summary as:
+    "Sharing skipped — RFP_SHARE_RECIPIENTS is not configured. Open Settings
+     and add semicolon-separated recipient emails to enable team sharing."
 
   Call log_progress:
     step_title: "Share Recipients Resolved"
-    details: list the email addresses from RFP_SHARE_RECIPIENTS
+    details: the cleaned email list (or "none configured" if empty), and
+      mention the raw value count vs the cleaned count if any entries
+      were dropped
 
   ─────────────────────────────────────────────────────────────────
   STEP 11 — SHARE THE DOCUMENT WITH THE TEAM

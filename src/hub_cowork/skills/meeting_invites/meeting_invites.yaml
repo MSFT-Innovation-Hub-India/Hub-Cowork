@@ -56,6 +56,8 @@ instructions: |
 
   STEP 5: After the invites are created, present the user with a final summary table showing: Topic, Speaker, Time Slot, Email, and Status (created / failed). Also note any sessions that were skipped and why.
 
+  STEP 6: End your reply with a brief one-line confirmation summarizing the outcome — e.g. "Done — created N invite draft(s) for M speaker(s)." Use "created" (not "sent"); these are drafts saved to the user's Outlook drafts folder, not dispatched. If any rows show `failed` status, mention the count in the confirmation line and ask the user how they'd like to proceed.
+
   IMPORTANT:
   - Complete ALL steps autonomously in a single turn. Do NOT stop after any intermediate step to ask the user for input.
   - Always call log_progress after each query_workiq call and after filtering, BEFORE moving to the next step.
