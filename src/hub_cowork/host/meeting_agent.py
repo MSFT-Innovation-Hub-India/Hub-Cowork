@@ -820,6 +820,41 @@ def _acquire_single_instance_lock():
 _SINGLE_INSTANCE_HANDLE = None
 
 
+# Engagement-context scratchpad files (one per customer) accumulate forever
+# unless cleaned up. Anything older than this is dropped on startup.
+_ENGAGEMENT_CONTEXT_TTL_DAYS = 30
+
+
+def _purge_stale_engagement_context():
+    """Delete engagement_context/*.json files older than the TTL.
+
+    The 4-phase agenda workflow uses these files to pass state between
+    phases. They're keyed by customer name and reused across re-runs, but
+    distinct customers add new files. After the TTL the customer's
+    workflow is almost certainly finished — re-running just regenerates
+    the file from a fresh briefing fetch.
+    """
+    try:
+        from hub_cowork.core.app_paths import ENGAGEMENT_CONTEXT_DIR
+    except Exception:
+        return
+    if not ENGAGEMENT_CONTEXT_DIR.exists():
+        return
+    cutoff = time.time() - _ENGAGEMENT_CONTEXT_TTL_DAYS * 86400
+    removed = 0
+    for path in ENGAGEMENT_CONTEXT_DIR.glob("*.json"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+                removed += 1
+        except Exception as e:
+            logger.warning("Could not purge stale context %s: %s", path.name, e)
+    if removed:
+        logger.info(
+            "Purged %d engagement_context file(s) older than %d days",
+            removed, _ENGAGEMENT_CONTEXT_TTL_DAYS,
+        )
+
 def main():
     global _window
 
@@ -830,6 +865,10 @@ def main():
     logger.info("%s starting (single-process mode)", APP_DISPLAY_NAME)
     logger.info("Log: %s", LOG_FILE)
     logger.info("=" * 50)
+
+    # Housekeeping: age out stale engagement_context scratchpad files so
+    # they don't accumulate forever (one per customer ever processed).
+    _purge_stale_engagement_context()
 
     # 1. Wire the thread executor to broadcast and notify.
     pool = get_thread_pool()
