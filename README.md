@@ -679,6 +679,22 @@ All logs are written to `~/.hub-cowork/agent.log` — routing decisions, tool ca
 - Ports **18080** (WebSocket) and **18081** (HTTP) are hardcoded.
 - No automated tests — verification is manual via the UI or `test-client/chat.py`.
 
+### Known issues & resolutions
+
+#### WorkIQ returns empty output when called from the agent (resolved Apr 2026)
+
+**Symptom:** A `query_workiq` invocation logs `WorkIQ Response received (stdout=0 chars, stderr=0 chars, rc=0)` and the skill reports "No matching email returned by WorkIQ", even though running the **exact same** `workiq ask -q "..."` command in a `cmd`/PowerShell terminal returns a full answer. Reproduces intermittently — short ASCII-only queries sometimes work, longer queries with non-ASCII characters in the response fail every time.
+
+**When it happens:** Any time `workiq.exe`'s response body contains at least one byte that is not valid UTF-8 — typically because the answer contains an em dash (`—`), smart quotes (`"` `"` `'` `'`), an accented character (`é`, `ò`, `ñ`), or other characters that .NET writes using the active Windows ANSI code page (cp1252) rather than UTF-8 when stdout is redirected to a pipe.
+
+**Root cause:** `src/hub_cowork/tools/query_workiq.py` was calling `subprocess.run(..., capture_output=True, text=True, encoding="utf-8")`. When `workiq.exe` (a .NET console app) detects that stdout is a pipe rather than a console, it writes output in the active Windows ANSI code page (cp1252 in en-US locales), **not** UTF-8. Python's subprocess reader thread then raises `UnicodeDecodeError: 'utf-8' codec can't decode byte 0xXX` on the first non-ASCII byte. The exception is **swallowed inside the reader thread** — the parent `subprocess.run()` call returns normally with `returncode=0` but `result.stdout == ""`. The agent sees an empty response and reports "no email found"; from a real terminal it works because the console handles encoding/display itself.
+
+Confirmed via a four-way diagnostic: `.CMD` shim, `node + workiq.js`, `workiq.exe` direct, and `workiq.exe` without `CREATE_NO_WINDOW` — **all four** failed identically with the underlying `UnicodeDecodeError: 'utf-8' codec can't decode byte 0xf2 in position 2151: invalid continuation byte` (`0xf2` = `ò` in cp1252).
+
+**Fix:** In [query_workiq.py](src/hub_cowork/tools/query_workiq.py), capture as raw bytes (no `text=`/`encoding=`) and decode with a tolerant fallback chain: `utf-8` → `cp1252` → `utf-8` with `errors='replace'`. The reader thread now never raises, so stdout is always returned in full.
+
+**General lesson:** When invoking any Windows .NET / native console binary from Python `subprocess` with `capture_output=True`, prefer **bytes capture + manual tolerant decode** over `text=True, encoding="utf-8"`. The console's automatic encoding translation does not apply when stdout is a pipe, and the silent loss of output on `UnicodeDecodeError` is extremely hard to debug.
+
 ---
 
 ## UI Architecture (TL;DR)

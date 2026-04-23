@@ -11,6 +11,33 @@ logger = logging.getLogger("hub_se_agent")
 
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
+
+def _decode(b: bytes | None) -> str:
+    """
+    Decode a captured stdout/stderr byte stream from workiq.
+
+    On Windows, workiq.exe writes output in the active ANSI code page (e.g.
+    cp1252) rather than UTF-8 when stdout is redirected. If we let Python's
+    subprocess decode with `encoding='utf-8'`, the reader thread raises
+    UnicodeDecodeError on the first non-ASCII byte (em dash, smart quote,
+    accented char, etc.), the exception is swallowed inside the reader
+    thread, and `result.stdout` ends up as the empty string -- producing the
+    silent "0 chars, rc=0" symptom seen from the agent. Capturing as bytes
+    and decoding here with `errors='replace'` is tolerant of either encoding.
+    """
+    if not b:
+        return ""
+    try:
+        return b.decode("utf-8")
+    except UnicodeDecodeError:
+        # Fall back to cp1252 (Windows ANSI in en-US locales). If that also
+        # fails, replace bad bytes so we never lose the whole response.
+        try:
+            return b.decode("cp1252")
+        except UnicodeDecodeError:
+            return b.decode("utf-8", errors="replace")
+
+
 # Unicode chars that cause mojibake when passed through CLI on Windows
 _UNICODE_REPLACEMENTS = {
     "\u2014": "--",     # em dash —
@@ -72,16 +99,16 @@ def handle(arguments: dict, *, on_progress=None, workiq_cli=None, **kwargs) -> s
     # Sanitize Unicode chars that cause mojibake on Windows CLI
     question = _sanitize_for_cli(question)
     try:
+        # Capture as bytes (text=False) and decode ourselves with a tolerant
+        # fallback chain -- workiq.exe writes cp1252 when stdout is redirected.
         # Windows command line limit is ~8191 chars. For long questions,
         # pipe via stdin in interactive mode instead of using -q argument.
         if len(question) > 7000:
             logger.info("[WorkIQ] Question too long for CLI arg (%d chars), using stdin", len(question))
             result = subprocess.run(
                 [workiq_cli, "ask"],
-                input=question + "\n",
+                input=question.encode("utf-8") + b"\n",
                 capture_output=True,
-                text=True,
-                encoding="utf-8",
                 timeout=180,
                 creationflags=_NO_WINDOW,
             )
@@ -89,15 +116,24 @@ def handle(arguments: dict, *, on_progress=None, workiq_cli=None, **kwargs) -> s
             result = subprocess.run(
                 [workiq_cli, "ask", "-q", question],
                 capture_output=True,
-                text=True,
-                encoding="utf-8",
                 timeout=120,
                 creationflags=_NO_WINDOW,
             )
+        stderr_text = _decode(result.stderr).strip()
         if result.returncode != 0:
-            return f"WorkIQ error (exit code {result.returncode}): {(result.stderr or '').strip()}"
-        output = (result.stdout or "").strip()
-        logger.info("[WorkIQ] Response received (%d chars)", len(output))
+            return f"WorkIQ error (exit code {result.returncode}): {stderr_text}"
+        output = _decode(result.stdout).strip()
+        logger.info(
+            "[WorkIQ] Response received (stdout=%d chars, stderr=%d chars, rc=%d)",
+            len(output), len(stderr_text), result.returncode,
+        )
+        if stderr_text:
+            logger.info("[WorkIQ] stderr: %s", stderr_text[:2000])
+        # If stdout is empty but stderr has content, surface stderr so the model
+        # sees what workiq actually said (some workiq paths write to stderr when
+        # stdout is not a TTY).
+        if not output and stderr_text:
+            output = stderr_text
         if on_progress:
             on_progress("tool", f"WorkIQ responded ({len(output)} chars)")
         return output
