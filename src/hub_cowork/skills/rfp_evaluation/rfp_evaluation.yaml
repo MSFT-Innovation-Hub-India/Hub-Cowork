@@ -49,24 +49,13 @@ instructions: |
   ─────────────────────────────────────────────────────────────────
   Determine how the RFP content is available:
 
-  A) If the user has already pasted RFP content into their message, use that
-     content directly. Skip the WorkIQ call.
-
-  B) If the user mentions a specific company, RFP ID, or email subject, call
-     query_workiq to find that specific email:
+  A) call query_workiq to find the specific emails that contain the RFP details based on the user's description. Use this prompt:
        "Find the email about {user's description}. Return the sender name,
         sender email, subject line, full email body, any attachment names,
         and the date received."
 
-  C) If the user's message is generic (e.g. "evaluate the latest RFP"), call
-     query_workiq:
-       "Find the most recent email where the subject contains RFP, Request
-        for Proposal, or Invitation to Tender. Return the sender name,
-        sender email, subject line, full email body, any attachment names,
-        and the date received."
-
   Do NOT restrict the search to unread emails only. Search across all recent
-  emails (last 7 days) matching the criteria.
+  emails matching the criteria.
 
   Call log_progress:
     step_title: "RFP Email Located"

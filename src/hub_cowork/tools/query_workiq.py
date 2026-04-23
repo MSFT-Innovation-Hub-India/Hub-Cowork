@@ -95,8 +95,8 @@ def handle(arguments: dict, *, on_progress=None, workiq_cli=None, **kwargs) -> s
                 creationflags=_NO_WINDOW,
             )
         if result.returncode != 0:
-            return f"WorkIQ error (exit code {result.returncode}): {result.stderr.strip()}"
-        output = result.stdout.strip()
+            return f"WorkIQ error (exit code {result.returncode}): {(result.stderr or '').strip()}"
+        output = (result.stdout or "").strip()
         logger.info("[WorkIQ] Response received (%d chars)", len(output))
         if on_progress:
             on_progress("tool", f"WorkIQ responded ({len(output)} chars)")
