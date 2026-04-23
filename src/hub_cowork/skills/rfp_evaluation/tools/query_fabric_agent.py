@@ -49,6 +49,7 @@ _TOKEN_REFRESH_BUFFER_SECONDS = 300  # refresh token if it expires within 5 min
 _cached_credential = None
 _cached_token: object | None = None  # azure.core.credentials.AccessToken
 
+
 SCHEMA = {
     "type": "function",
     "name": "query_fabric_agent",
@@ -253,6 +254,7 @@ def handle(arguments: dict, *, on_progress=None, **kwargs) -> str:
         run = client.beta.threads.runs.create(
             thread_id=thread_id, assistant_id=assistant.id
         )
+        logger.info("[FabricAgent] thread_id=%s run_id=%s", thread_id, run.id)
 
         # 5. Poll
         terminal = {"completed", "failed", "cancelled", "expired", "requires_action"}
