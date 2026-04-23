@@ -74,9 +74,9 @@ Hub Cowork bridges two clouds of the Microsoft AI stack, with the user's **Micro
 - **Azure OpenAI Responses API** — the autonomous reasoning core that orchestrates the multi-step agent loop via function calling.
 - **FoundryIQ** — an **Agentic RAG** over **customer testimonials from past engagements**. The testimonial documents are uploaded to **Azure Blob Storage** and indexed into FoundryIQ, which the agent queries to surface relevant prior-customer voice when evaluating a new RFP.
 - **FabricIQ / OneLake** — holds the **structured artefacts** from past projects (risks, costs, timelines, KPIs). A **Fabric Data Agent** is built on top of OneLake to expose this data through a natural-language interface.
-- **Microsoft Foundry Agent** — wraps the Fabric Data Agent as a callable tool, so the local agent invokes the Foundry Agent (via function calling) and the Foundry Agent in turn delegates to the Fabric Data Agent. This indirection keeps the local agent decoupled from Fabric specifics and lets the Foundry Agent compose additional context if needed.
+- **Fabric Data Agent — direct call** — the local agent calls the Fabric Data Agent's **published OpenAI-compatible Assistants endpoint** (`/aiassistant/openai`) directly, with a Fabric-scoped Entra bearer token. An earlier design routed this through a Microsoft Foundry Agent that wrapped Fabric as a connected tool; that indirection added 10–15 minutes of latency and frequent timeouts, so it has been removed in favour of the direct call.
 
-**Identity flow** — The user's Entra token issued at WorkIQ sign-in is propagated **on behalf of the user** to Azure OpenAI, FoundryIQ, the Foundry Agent, the Fabric Data Agent, ACS, and Azure Managed Redis (via `redis-entraid`). Every call into both clouds runs with the user's own permissions; the agent never holds a shared service principal.
+**Identity flow** — The user's Entra token issued at WorkIQ sign-in is propagated **on behalf of the user** to Azure OpenAI, FoundryIQ, the Fabric Data Agent, ACS, and Azure Managed Redis (via `redis-entraid`). Every call into both clouds runs with the user's own permissions; the agent never holds a shared service principal.
 
 ---
 
@@ -227,7 +227,7 @@ hub_config.load() returns:  defaults  ⊕  user overrides   (user wins per-key)
 
 ### 2. Environment variables — endpoints, model names, secrets
 
-Things the code reads as `os.environ["..."]` at startup: Azure OpenAI endpoint, model deployment names, ACS endpoint, Redis endpoint, FoundryIQ / Foundry project endpoints, RFP output folder, RFP share recipients, Graph credentials, etc.
+Things the code reads as `os.environ["..."]` at startup: Azure OpenAI endpoint, model deployment names, ACS endpoint, Redis endpoint, FoundryIQ search endpoint, Fabric Data Agent URL, RFP output folder, RFP share recipients, Graph credentials, etc.
 
 These come from **three layers**, applied in this precedence (highest first):
 
@@ -252,7 +252,7 @@ _load_env_files()        # 2. load_dotenv(.env, override=False)
 | Setting | Where | Read by |
 |---|---|---|
 | `hub_name`, `topic_catalog`, `default_session_start_time`, `agenda_output_folder`, `agenda_template_path` | Hub config (top level of `hub_config.json`) | Skills, via `get_hub_config` tool |
-| `AZURE_OPENAI_*`, `ACS_*`, `AZURE_TENANT_ID`, `AZ_REDIS_CACHE_ENDPOINT`, `REDIS_*`, `FOUNDRYIQ_*`, `FOUNDRY_*`, `GRAPH_*`, `RFP_OUTPUT_FOLDER`, `RFP_SHARE_RECIPIENTS`, `WORKIQ_PATH` | Env vars (any of the 3 layers above) | Anywhere via `os.environ`, plus `get_hub_config` (see consistency note) |
+| `AZURE_OPENAI_*`, `ACS_*`, `AZURE_TENANT_ID`, `AZ_REDIS_CACHE_ENDPOINT`, `REDIS_*`, `FOUNDRYIQ_*`, `FABRIC_*`, `RESOURCE_TENANT_ID`, `GRAPH_*`, `RFP_OUTPUT_FOLDER`, `RFP_SHARE_RECIPIENTS`, `WORKIQ_PATH` | Env vars (any of the 3 layers above) | Anywhere via `os.environ`, plus `get_hub_config` (see consistency note) |
 
 ### One consistent read path (consistency note)
 
@@ -659,7 +659,7 @@ A single `InteractiveBrowserCredential` (created in `core/agent_core.py`) is sha
 | `tzlocal` | Auto-detect system timezone |
 | `python-docx` | Word document creation |
 | `redis`, `redis-entraid` | Azure Managed Redis (cluster mode, passwordless) |
-| `azure-ai-projects` | RFP skill — Fabric Data Agent client |
+| `openai` (Assistants API) | RFP skill — Fabric Data Agent direct client (subclassed `OpenAI` with per-request Fabric bearer token) |
 | `requests` | RFP skill — FoundryIQ REST |
 
 ---
