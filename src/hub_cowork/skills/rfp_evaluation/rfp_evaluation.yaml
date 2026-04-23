@@ -380,7 +380,7 @@ instructions: |
        and details listing which sources failed and why.
     2. Return a clear message to the user: "Cannot produce a Bid Intelligence
        Brief because both FoundryIQ and the Fabric Data Agent are unreachable.
-       Please check your configuration (FOUNDRYIQ_ENDPOINT, FOUNDRY_PROJECT_ENDPOINT,
+       Please check your configuration (FOUNDRYIQ_ENDPOINT, FABRIC_DATA_AGENT_URL,
        RESOURCE_TENANT_ID) and try again."
     3. Do NOT create a document, share it, or report success.
     If only ONE source failed, proceed but clearly flag the missing data in

@@ -623,7 +623,7 @@ Set in `.env` at the repo root, or in `src/hub_cowork/assets/.env.defaults` for 
 | `AGENT_TIMEZONE` | (optional) IANA override; auto-detected otherwise |
 | `WORKIQ_PATH` | (optional) Full path to WorkIQ CLI |
 | `FOUNDRYIQ_ENDPOINT`, `FOUNDRYIQ_KB_NAME`, `FOUNDRYIQ_AUTH_MODE`, `FOUNDRYIQ_API_VERSION` | RFP skill only — Azure AI Search knowledge store |
-| `FOUNDRY_PROJECT_ENDPOINT`, `FOUNDRY_AGENT_NAME`, `FOUNDRY_AUTH_MODE` | RFP skill only — Fabric Data Agent |
+| `FABRIC_DATA_AGENT_URL`, `FABRIC_AUTH_MODE` | RFP skill only — Fabric Data Agent (direct call) |
 | `RESOURCE_TENANT_ID` | RFP skill only — cross-tenant guest subscription |
 | `RFP_OUTPUT_FOLDER`, `RFP_SHARE_RECIPIENTS` | RFP skill — OneDrive output + share list |
 | `GRAPH_*` | (optional) Microsoft Graph app creds for document sharing; falls back to WorkIQ |

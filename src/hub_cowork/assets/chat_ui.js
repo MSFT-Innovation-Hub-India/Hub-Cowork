@@ -1014,10 +1014,12 @@ const ENV_GROUPS = [
     {key: "FOUNDRYIQ_AUTH_MODE",   hint: "browser | cli"},
     {key: "FOUNDRYIQ_API_VERSION", hint: "e.g. 2025-11-01-preview"},
   ]},
-  {label: "RFP Evaluation — Foundry Agent", keys: [
-    {key: "FOUNDRY_PROJECT_ENDPOINT", hint: "Foundry project endpoint"},
-    {key: "FOUNDRY_AGENT_NAME",       hint: "Agent name, e.g. project-analysis-agent"},
-    {key: "FOUNDRY_AUTH_MODE",        hint: "browser | cli"},
+  {label: "RFP Evaluation — Fabric Data Agent", keys: [
+    {key: "FABRIC_DATA_AGENT_URL", hint: "Published URL ending in /aiassistant/openai"},
+    {key: "FABRIC_AUTH_MODE",      hint: "browser | cli"},
+    {key: "FABRIC_API_VERSION",    hint: "e.g. 2024-05-01-preview"},
+    {key: "FABRIC_POLL_TIMEOUT",   hint: "Seconds, default 600"},
+    {key: "FABRIC_POLL_INTERVAL",  hint: "Seconds, default 3"},
   ]},
   {label: "RFP Evaluation — Output", keys: [
     {key: "RFP_OUTPUT_FOLDER",    hint: "Local folder for generated briefs"},
