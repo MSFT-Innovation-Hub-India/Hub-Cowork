@@ -41,6 +41,8 @@ import os
 import time
 import uuid
 
+from hub_cowork.tools._tool_result import ok, no_data, error
+
 logger = logging.getLogger("hub_se_agent")
 
 _FABRIC_SCOPE = "https://api.fabric.microsoft.com/.default"
@@ -48,6 +50,17 @@ _TOKEN_REFRESH_BUFFER_SECONDS = 300  # refresh token if it expires within 5 min
 
 _cached_credential = None
 _cached_token: object | None = None  # azure.core.credentials.AccessToken
+
+
+# Note: we do NOT sniff prose for "no rows / no data" phrases. Deciding
+# whether a Fabric assistant's free-text answer means "empty result" vs
+# "here is the answer" is a semantic judgment that belongs in the calling
+# skill's LLM. This tool reports objective signals only:
+#   - transport/run failure -> status: "error"
+#   - completely empty reply -> status: "no_data" (structural)
+#   - otherwise -> status: "ok" with the raw reply
+# The skill instructions tell the LLM to read `ok` content and recognize
+# when the assistant says it couldn't find the data.
 
 
 SCHEMA = {
@@ -170,7 +183,12 @@ def _get_token(credential) -> str:
 
 
 def _build_client(base_url: str, api_version: str, credential):
-    """OpenAI client subclass that injects a Fabric bearer token per request."""
+    """OpenAI client subclass that injects a Fabric bearer token per request.
+
+    `max_retries=3` is the OpenAI SDK's built-in retry (exponential + jitter,
+    covers 408 / 409 / 429 / 5xx automatically). `timeout=120` is the
+    per-HTTP-call timeout; the overall run polling has its own budget.
+    """
     from openai import OpenAI
     from openai._models import FinalRequestOptions
     from openai._types import Omit
@@ -184,6 +202,8 @@ def _build_client(base_url: str, api_version: str, credential):
                 api_key="placeholder",  # required by SDK; real auth is per-request header
                 base_url=base_url,
                 default_query={"api-version": api_version},
+                max_retries=3,
+                timeout=120.0,
             )
 
         def _prepare_options(self, options: FinalRequestOptions) -> None:
@@ -200,7 +220,8 @@ def _build_client(base_url: str, api_version: str, credential):
 
 
 def handle(arguments: dict, *, on_progress=None, **kwargs) -> str:
-    """Call the Fabric Data Agent directly via its published OpenAI endpoint."""
+    """Call the Fabric Data Agent and return a JSON envelope."""
+    tool = "query_fabric_agent"
     question = arguments["question"]
     cfg = _load_config()
 
@@ -219,15 +240,17 @@ def handle(arguments: dict, *, on_progress=None, **kwargs) -> str:
         poll_interval = 3.0
 
     if not base_url:
-        return (
-            "Error: FABRIC_DATA_AGENT_URL is not configured. Add the published "
-            "URL from the Fabric data agent (ends in /aiassistant/openai) to "
-            "hub_config.json or your .env file."
+        return error(
+            tool, "config",
+            "FABRIC_DATA_AGENT_URL is not configured. Add the published URL "
+            "from the Fabric data agent (ends in /aiassistant/openai) to "
+            "hub_config.json or your .env file.",
         )
     if not tenant_id:
-        return (
-            "Error: RESOURCE_TENANT_ID is not configured. This is the tenant ID "
-            "where the Fabric workspace lives."
+        return error(
+            tool, "config",
+            "RESOURCE_TENANT_ID is not configured. This is the tenant ID "
+            "where the Fabric workspace lives.",
         )
 
     logger.info("[FabricAgent] Querying Fabric Data Agent directly: %s", question[:150])
@@ -278,7 +301,10 @@ def handle(arguments: dict, *, on_progress=None, **kwargs) -> str:
         if run.status != "completed":
             err = getattr(run, "last_error", None)
             err_msg = getattr(err, "message", str(err)) if err else "no error details"
-            return f"Fabric Agent run ended with status='{run.status}': {err_msg}"
+            return error(
+                tool, "remote",
+                f"Fabric run ended with status='{run.status}': {err_msg}",
+            )
 
         # 6. Read assistant reply (latest assistant message)
         msgs = client.beta.threads.messages.list(thread_id=thread_id, order="desc")
@@ -293,39 +319,54 @@ def handle(arguments: dict, *, on_progress=None, **kwargs) -> str:
                 result_text = "\n".join(p for p in parts if p)
                 break
 
-        if not result_text:
-            result_text = "(Fabric Data Agent returned an empty response.)"
+        # Successful run. Structural no_data only when the assistant
+        # message is completely empty. Any non-empty prose is returned as
+        # `ok` -- the calling skill's LLM decides if the content means
+        # "no matching data" semantically.
+        stripped = result_text.strip()
+        if not stripped:
+            logger.info("[FabricAgent] Run completed with empty assistant message (structural no_data)")
+            if on_progress:
+                on_progress("tool", "Fabric Agent returned an empty message")
+            return no_data(
+                tool,
+                "(empty assistant message)",
+                query=question,
+            )
 
         logger.info("[FabricAgent] Response received (%d chars)", len(result_text))
         if on_progress:
             on_progress("tool", f"Fabric Agent responded ({len(result_text)} chars)")
-        return result_text
+        return ok(tool, result_text)
 
     except ImportError as e:
-        return (
-            f"Error: required package not installed ({e}). "
-            "Run: pip install openai azure-identity"
+        return error(
+            tool, "config",
+            f"Required package not installed ({e}). "
+            "Run: pip install openai azure-identity",
         )
     except TimeoutError as e:
         logger.error("[FabricAgent] %s", e)
-        return f"Fabric Agent timed out: {e}"
+        return error(tool, "timeout", f"Fabric Agent timed out: {e}")
     except Exception as e:
         error_str = str(e)
         logger.error("[FabricAgent] Error: %s", error_str, exc_info=True)
         if "401" in error_str or "unauthorized" in error_str.lower():
-            return (
-                f"Fabric Agent authentication failed (401). Check RESOURCE_TENANT_ID "
-                f"({tenant_id}) and that your account has access to the Fabric "
-                f"workspace hosting the data agent. If using 'cli' mode, run: "
-                f"az login --tenant {tenant_id}"
+            return error(
+                tool, "auth",
+                f"Fabric Agent authentication failed (401). Check "
+                f"RESOURCE_TENANT_ID ({tenant_id}) and that your account has "
+                f"access to the Fabric workspace hosting the data agent. "
+                f"If using 'cli' mode, run: az login --tenant {tenant_id}",
             )
         if "403" in error_str or "forbidden" in error_str.lower():
-            return (
-                "Fabric Agent access denied (403). Ensure your account has at "
-                "least Viewer permission on the Fabric workspace and read access "
-                "to the data agent's underlying data sources."
+            return error(
+                tool, "auth",
+                "Fabric Agent access denied (403). Ensure your account has "
+                "at least Viewer permission on the Fabric workspace and read "
+                "access to the data agent's underlying data sources.",
             )
-        return f"Fabric Agent error: {e}"
+        return error(tool, "unexpected", f"Fabric Agent error: {e}")
     finally:
         # 7. Cleanup
         if client is not None and thread_id is not None:

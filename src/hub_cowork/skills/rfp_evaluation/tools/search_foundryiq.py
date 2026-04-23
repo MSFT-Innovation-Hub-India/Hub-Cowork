@@ -34,15 +34,53 @@ pip dependencies:
 
 import logging
 import os
+import threading
 import time
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+from hub_cowork.tools._tool_result import ok, no_data, error
 
 logger = logging.getLogger("hub_se_agent")
 
 _SEARCH_SCOPE = "https://search.azure.com/.default"
 _cached_credential = None
 _cached_token: object | None = None   # azure.core.credentials.AccessToken
+
+# Shared HTTP session with automatic retry on transient failures. Applied
+# to every FoundryIQ request, not just the first one. Retry policy:
+#   - 3 attempts total
+#   - exponential backoff 1s -> 2s -> 4s (cap 10s)
+#   - retry on 429 / 502 / 503 / 504 and on connection reset / read errors
+#   - retry POST (idempotent for our use: it's a read-only search)
+_session_lock = threading.Lock()
+_session: requests.Session | None = None
+
+
+def _get_session() -> requests.Session:
+    """Return a process-wide requests.Session with retry configured."""
+    global _session
+    with _session_lock:
+        if _session is not None:
+            return _session
+        retry = Retry(
+            total=3,
+            connect=3,
+            read=3,
+            status=3,
+            backoff_factor=1.0,
+            status_forcelist=(429, 502, 503, 504),
+            allowed_methods=frozenset(["GET", "POST"]),
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        sess = requests.Session()
+        sess.mount("https://", adapter)
+        sess.mount("http://", adapter)
+        _session = sess
+        return sess
 
 SCHEMA = {
     "type": "function",
@@ -160,7 +198,8 @@ def _get_bearer_token(credential) -> str:
 
 
 def handle(arguments: dict, *, on_progress=None, **kwargs) -> str:
-    """Query the FoundryIQ knowledge base and return synthesised answer."""
+    """Query the FoundryIQ knowledge base and return a JSON envelope."""
+    tool = "search_foundryiq"
     query = arguments["query"]
     top = int(arguments.get("top", 3))
 
@@ -172,15 +211,17 @@ def handle(arguments: dict, *, on_progress=None, **kwargs) -> str:
     auth_mode = cfg["FOUNDRYIQ_AUTH_MODE"]
 
     if not endpoint:
-        return (
-            "Error: FOUNDRYIQ_ENDPOINT is not configured. "
-            "Add it to hub_config.json or your .env file."
+        return error(
+            tool, "config",
+            "FOUNDRYIQ_ENDPOINT is not configured. Add it to hub_config.json "
+            "or your .env file.",
         )
     if not tenant_id:
-        return (
-            "Error: RESOURCE_TENANT_ID is not configured. "
-            "This is the tenant ID where the Azure AI Search service lives "
-            "(the guest/resource tenant, not your corp tenant)."
+        return error(
+            tool, "config",
+            "RESOURCE_TENANT_ID is not configured. This is the tenant ID "
+            "where the Azure AI Search service lives (the guest/resource "
+            "tenant, not your corp tenant).",
         )
 
     logger.info("[FoundryIQ] Searching: %s (top=%d)", query[:150], top)
@@ -216,7 +257,9 @@ def handle(arguments: dict, *, on_progress=None, **kwargs) -> str:
             "Authorization": f"Bearer {token}",
         }
 
-        response = requests.post(url, json=payload, headers=headers, timeout=70)
+        response = _get_session().post(
+            url, json=payload, headers=headers, timeout=70,
+        )
         response.raise_for_status()
         data = response.json()
 
@@ -227,34 +270,75 @@ def handle(arguments: dict, *, on_progress=None, **kwargs) -> str:
                 if block.get("type") == "text":
                     answer_text += block.get("text", "")
 
-        # Append reference count for transparency
         refs = data.get("references", [])
+
+        # Successful HTTP call but the knowledge base had nothing for this
+        # query. Empty synthesis text AND zero references is the unambiguous
+        # structural signal — no heuristics needed here.
+        if not answer_text.strip() and not refs:
+            logger.info("[FoundryIQ] Empty answer + 0 refs — no_data")
+            if on_progress:
+                on_progress("tool", "FoundryIQ returned no matching documents")
+            return no_data(
+                tool,
+                "FoundryIQ knowledge base returned no matching documents.",
+                query=query,
+            )
+
+        # Append reference count for transparency
         if refs:
             answer_text += f"\n\n[{len(refs)} source document(s) retrieved]"
 
         if not answer_text:
-            answer_text = str(data)  # raw fallback for debugging
+            # References without synthesised text — odd, but treat as raw payload.
+            answer_text = str(data)
 
         logger.info("[FoundryIQ] Response received (%d chars, %d refs)", len(answer_text), len(refs))
         if on_progress:
             on_progress("tool", f"FoundryIQ responded ({len(answer_text)} chars, {len(refs)} sources)")
 
-        return answer_text
+        return ok(tool, answer_text, meta={"references": len(refs)})
 
     except requests.HTTPError as e:
-        status = e.response.status_code if e.response is not None else "unknown"
+        status = e.response.status_code if e.response is not None else 0
         body = e.response.text[:500] if e.response is not None else ""
         logger.error("[FoundryIQ] HTTP %s: %s", status, body)
         if status == 401:
-            return (
-                f"FoundryIQ authentication failed (HTTP 401). "
-                f"Check RESOURCE_TENANT_ID ({tenant_id}) and ensure your account "
-                f"has been granted access to the Azure AI Search resource in that tenant. "
-                f"If using 'cli' mode, run: az login --tenant {tenant_id}"
+            return error(
+                tool, "auth",
+                f"FoundryIQ authentication failed (HTTP 401). Check "
+                f"RESOURCE_TENANT_ID ({tenant_id}) and ensure your account "
+                f"has been granted access to the Azure AI Search resource "
+                f"in that tenant. If using 'cli' mode, run: "
+                f"az login --tenant {tenant_id}",
             )
-        return f"FoundryIQ HTTP error {status}: {body}"
+        if status == 403:
+            return error(
+                tool, "auth",
+                "FoundryIQ access denied (HTTP 403). Your account is "
+                "authenticated but lacks read access to the knowledge base "
+                "or its underlying index.",
+            )
+        if status == 404:
+            return error(
+                tool, "config",
+                f"FoundryIQ endpoint or knowledge base not found (HTTP 404). "
+                f"Check FOUNDRYIQ_ENDPOINT and FOUNDRYIQ_KB_NAME. Body: {body}",
+            )
+        if 500 <= status < 600:
+            return error(
+                tool, "remote",
+                f"FoundryIQ service error HTTP {status} after retry: {body}",
+            )
+        return error(tool, "remote", f"FoundryIQ HTTP {status}: {body}")
+    except requests.ConnectionError as e:
+        logger.error("[FoundryIQ] Connection error: %s", e)
+        return error(tool, "network", f"FoundryIQ connection failed: {e}")
     except requests.Timeout:
-        return "FoundryIQ request timed out after 70 seconds."
+        return error(
+            tool, "timeout",
+            "FoundryIQ request timed out after 70 seconds (incl. retries).",
+        )
     except Exception as e:
         logger.error("[FoundryIQ] Unexpected error: %s", e, exc_info=True)
-        return f"FoundryIQ error: {e}"
+        return error(tool, "unexpected", f"FoundryIQ unexpected error: {e}")

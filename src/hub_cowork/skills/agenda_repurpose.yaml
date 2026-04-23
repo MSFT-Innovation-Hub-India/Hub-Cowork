@@ -65,8 +65,18 @@ instructions: |
 
   If the source is unclear, ask the user which existing agenda to use.
 
-  If query_workiq returns no results or the document is not found, inform the user
-  and ask them to clarify or provide a different source agenda name.
+  query_workiq returns a JSON envelope. Handle each shape:
+    - `{"status": "ok", "data": "..."}` → parse `data` as the agenda content.
+      BUT: `ok` only means WorkIQ responded. Read the `data` text first. If
+      it says "I couldn't find that document", "no matching agenda", "I
+      don't have information about…", etc., treat it the same as `no_data`
+      (below).
+    - `{"status": "no_data", "message": "..."}` → the document does not exist.
+      Inform the user and ask them to clarify or provide a different source
+      agenda name. Do NOT retry the same query.
+    - `{"status": "error", "kind": "...", "message": "..."}` → transport or
+      auth failure. Surface the error kind/message and stop; do not fabricate
+      agenda content.
 
   Call log_progress ("Source Agenda Retrieved") with a brief summary of what was found
   (engagement type, number of sessions, source customer name).

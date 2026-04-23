@@ -36,6 +36,13 @@ import time
 import uuid
 
 import redis
+from redis.backoff import ExponentialBackoff
+from redis.retry import Retry
+from redis.exceptions import (
+    BusyLoadingError,
+    ConnectionError as RedisConnectionError,
+    TimeoutError as RedisTimeoutError,
+)
 from redis_entraid.cred_provider import EntraIdCredentialsProvider
 from redis_entraid.identity_provider import DefaultAzureCredentialProvider
 from redis.auth.token_manager import TokenManagerConfig, RetryPolicy
@@ -43,7 +50,26 @@ from redis.auth.token_manager import TokenManagerConfig, RetryPolicy
 logger = logging.getLogger("hub_se_agent")
 
 
+def _svc_mark(status: str, detail: str = "") -> None:
+    """Update the ``redis_teams`` service tile. Best-effort — never raises."""
+    try:
+        from hub_cowork.core.service_status import get_monitor
+        get_monitor().mark("redis_teams", status, detail)  # type: ignore[arg-type]
+    except Exception:
+        pass
+
+
 DEFAULT_NAMESPACE = "hub-cowork"
+
+# Initial connect retry budget. For an interactive desktop agent, ~30 seconds
+# covers genuine transient blips (Redis rolling restart, brief network hiccup,
+# DNS flake) without making the user wait minutes for a misconfigured endpoint
+# to be detected. If we can't connect inside this budget, the bridge falls
+# through to local-only mode and the user can restart after fixing config.
+#   delays: 2s, 4s, 8s, 15s  → ~29s worst case over 4 attempts.
+_INITIAL_CONNECT_MAX_ATTEMPTS = 4
+_INITIAL_CONNECT_BASE_DELAY = 2.0
+_INITIAL_CONNECT_MAX_DELAY = 15.0
 
 
 class RedisBridge:
@@ -94,7 +120,12 @@ class RedisBridge:
     # ------------------------------------------------------------------
 
     def _connect(self):
-        """Create the Redis cluster connection using the shared credential."""
+        """Create the Redis cluster connection using the shared credential.
+
+        Built-in retry: the client retries on ConnectionError / TimeoutError /
+        BusyLoadingError using exponential backoff so transient blips during
+        normal operation are absorbed without surfacing to callers.
+        """
         # Wrap the shared InteractiveBrowserCredential (silent refresh via cached auth record)
         # instead of DefaultAzureCredential (which spawns az CLI processes → cmd windows)
         idp = DefaultAzureCredentialProvider(
@@ -106,6 +137,18 @@ class RedisBridge:
         )
         credential_provider = EntraIdCredentialsProvider(idp, token_mgr_config)
 
+        # SDK-level retry: 3 attempts, exponential backoff (1s, 2s, 4s, capped 10s)
+        # on connection / timeout / busy-loading errors. Applied to every command.
+        retry = Retry(
+            backoff=ExponentialBackoff(cap=10, base=1),
+            retries=3,
+            supported_errors=(
+                RedisConnectionError,
+                RedisTimeoutError,
+                BusyLoadingError,
+            ),
+        )
+
         self._client = redis.RedisCluster(
             host=self._host,
             port=self._port,
@@ -115,10 +158,11 @@ class RedisBridge:
             credential_provider=credential_provider,
             socket_timeout=10,
             socket_connect_timeout=10,
+            retry=retry,
         )
         self._client.ping()
         self._connected_at = time.time()
-        logger.info("Redis bridge connected to %s:%d (credential_provider)",
+        logger.info("Redis bridge connected to %s:%d (credential_provider, retry=3)",
                      self._host, self._port)
 
     _MAX_CONNECTION_AGE = 1800  # force reconnect every 30 minutes
@@ -150,33 +194,76 @@ class RedisBridge:
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def start(self, on_broadcast=None):
-        """Start the bridge: connect, register, begin polling.
+    def _connect_with_retry(self) -> bool:
+        """Try the initial connect with exponential backoff.
 
-        The bridge no longer owns the task queue — the ExecutorPool does.
-        We talk to the ThreadManager directly for inbound routing.
+        Returns True on success, False if all attempts were exhausted (in
+        which case the bridge stays disabled and the agent runs in
+        local-only mode).
+        """
+        delay = _INITIAL_CONNECT_BASE_DELAY
+        for attempt in range(1, _INITIAL_CONNECT_MAX_ATTEMPTS + 1):
+            if self._stopping.is_set():
+                return False
+            try:
+                self._connect()
+                if attempt > 1:
+                    logger.info(
+                        "Redis bridge connected on attempt %d/%d",
+                        attempt, _INITIAL_CONNECT_MAX_ATTEMPTS,
+                    )
+                return True
+            except Exception as e:
+                if attempt >= _INITIAL_CONNECT_MAX_ATTEMPTS:
+                    logger.error(
+                        "Redis bridge initial connect failed after %d attempts (%s) — "
+                        "running in local-only mode",
+                        attempt, e,
+                    )
+                    _svc_mark("down", f"connect failed after {attempt} attempts: {e}")
+                    return False
+                logger.warning(
+                    "Redis bridge connect attempt %d/%d failed (%s) — retrying in %.1fs",
+                    attempt, _INITIAL_CONNECT_MAX_ATTEMPTS, e, delay,
+                )
+                # Wait but stay responsive to shutdown signals.
+                if self._stopping.wait(timeout=delay):
+                    return False
+                delay = min(delay * 2, _INITIAL_CONNECT_MAX_DELAY)
+        return False
+
+    def start(self, on_broadcast=None):
+        """Start the bridge: connect (with retry on a worker thread), register, begin polling.
+
+        The initial connect can take a while (token acquisition + DNS +
+        TLS + cluster discovery) and may transiently fail, so we run it in
+        a background worker. The poller and heartbeat threads are started
+        only once the connection succeeds.
         """
         self._on_broadcast = on_broadcast
-        try:
-            self._connect()
-        except Exception as e:
-            logger.error("Redis bridge failed to connect: %s", e)
-            return
 
-        self._register_agent()
+        def _bootstrap():
+            if not self._connect_with_retry():
+                return  # gave up — stay in local-only mode
 
-        self._poller_thread = threading.Thread(
-            target=self._poll_inbox, daemon=True, name="redis-inbox-poller"
-        )
-        self._poller_thread.start()
+            self._register_agent()
 
-        self._heartbeat_thread = threading.Thread(
-            target=self._heartbeat_loop, daemon=True, name="redis-heartbeat"
-        )
-        self._heartbeat_thread.start()
+            self._poller_thread = threading.Thread(
+                target=self._poll_inbox, daemon=True, name="redis-inbox-poller",
+            )
+            self._poller_thread.start()
 
-        logger.info("Redis bridge started (namespace=%s, inbox=%s)",
-                    self._namespace, self._inbox_key)
+            self._heartbeat_thread = threading.Thread(
+                target=self._heartbeat_loop, daemon=True, name="redis-heartbeat",
+            )
+            self._heartbeat_thread.start()
+
+            logger.info("Redis bridge started (namespace=%s, inbox=%s)",
+                        self._namespace, self._inbox_key)
+
+        threading.Thread(
+            target=_bootstrap, daemon=True, name="redis-bootstrap",
+        ).start()
 
     def stop(self):
         """Signal the bridge to stop."""
@@ -186,6 +273,7 @@ class RedisBridge:
                 self._client.close()
             except Exception:
                 pass
+        _svc_mark("down", "bridge stopped")
         logger.info("Redis bridge stopped")
 
     # ------------------------------------------------------------------
@@ -193,7 +281,13 @@ class RedisBridge:
     # ------------------------------------------------------------------
 
     def _register_agent(self):
-        """Register / refresh this agent's presence in Redis."""
+        """Register / refresh this agent's presence in Redis.
+
+        Successful registration is the moment the Teams relay can reach us,
+        so this is also when the ``redis_teams`` status tile flips green.
+        Failure here means we're connected to Redis but couldn't publish
+        presence — still a broken channel from the Teams side.
+        """
         try:
             self._ensure_connected()
             info = json.dumps({
@@ -204,8 +298,10 @@ class RedisBridge:
             })
             self._client.set(self._agent_key, info, ex=self._ttl)
             logger.info("Agent registered: %s (TTL=%ds)", self._agent_key, self._ttl)
+            _svc_mark("ok", "")
         except Exception as e:
             logger.error("Agent registration failed: %s", e)
+            _svc_mark("down", f"presence registration failed: {e}")
 
     def _heartbeat_loop(self):
         """Refresh the agent registration key every 30 minutes."""
@@ -220,8 +316,14 @@ class RedisBridge:
     # ------------------------------------------------------------------
 
     def _poll_inbox(self):
-        """Block-read from the inbox stream, dispatching messages to the task queue."""
+        """Block-read from the inbox stream, dispatching messages to the task queue.
+
+        On connection loss we drop into an exponential-backoff reconnect loop
+        rather than retrying every 5s indefinitely (which floods logs and can
+        keep the server under load).
+        """
         last_id = "$"  # only new messages from this point forward
+        reconnect_delay = _INITIAL_CONNECT_BASE_DELAY
         while not self._stopping.is_set():
             try:
                 self._ensure_connected()
@@ -229,6 +331,8 @@ class RedisBridge:
                 result = self._client.xread(
                     {self._inbox_key: last_id}, block=5000, count=10
                 )
+                # Successful round-trip — reset reconnect backoff.
+                reconnect_delay = _INITIAL_CONNECT_BASE_DELAY
                 if not result:
                     continue
 
@@ -237,10 +341,15 @@ class RedisBridge:
                         last_id = msg_id
                         self._handle_inbox_message(msg_id, fields)
 
-            except redis.ConnectionError as e:
-                logger.warning("Redis connection lost: %s — reconnecting in 5s", e)
+            except (RedisConnectionError, RedisTimeoutError, BusyLoadingError) as e:
+                logger.warning(
+                    "Redis connection lost (%s) — reconnecting in %.1fs",
+                    e, reconnect_delay,
+                )
+                _svc_mark("down", f"connection lost: {e}")
                 self._client = None
-                self._stopping.wait(timeout=5)
+                self._stopping.wait(timeout=reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 2, _INITIAL_CONNECT_MAX_DELAY)
             except Exception as e:
                 logger.error("Inbox poll error: %s", e, exc_info=True)
                 self._stopping.wait(timeout=5)

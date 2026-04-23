@@ -45,6 +45,47 @@ instructions: |
   step is done. Always call log_progress after each major step.
 
   ─────────────────────────────────────────────────────────────────
+  TOOL RESULT CONTRACT — READ FIRST
+  ─────────────────────────────────────────────────────────────────
+  Every data-retrieval tool (query_workiq, search_foundryiq, query_fabric_agent)
+  returns a JSON string with one of three shapes. You MUST parse `status` and
+  react accordingly — do not treat these as free-form text:
+
+    {"status": "ok", "data": "..."}
+        → Use `data` as the result content. IMPORTANT: `ok` only means the
+          service responded — it does NOT guarantee the answer contains the
+          data you asked for. You MUST read `data` and judge whether it
+          actually answers the question. If the content says things like
+          "I could not find…", "no matching records", "not available in
+          our data", "I don't have information about…", or otherwise
+          indicates the answer is empty, TREAT IT THE SAME AS `no_data`:
+          adapt, flag the gap, do not retry the same query, and do not
+          fabricate content.
+
+    {"status": "no_data", "message": "..."}
+        → Structural empty result (service returned nothing at all). Same
+          reaction as a semantic "couldn't find it" inside `ok`: adapt,
+          flag the gap, continue. Do NOT retry the same query. You may
+          reformulate ONCE with different terms, then stop.
+
+    {"status": "error", "kind": "<kind>", "message": "..."}
+        → Transport / config / auth failure. Data state is unknown. Do NOT
+          fabricate results. Log the failure via log_progress and flag the
+          affected section. `kind` values:
+            - "config"      → missing env var or binary; unrecoverable
+                              without user action
+            - "auth"        → 401/403 token or permission problem
+            - "timeout"     → service did not respond in time
+            - "network"     → connection refused/reset/DNS
+            - "remote"      → service reported 5xx or failed run
+            - "unexpected"  → anything else
+
+  Rule of thumb:
+    - `no_data` (structural OR semantic-inside-`ok`) is an answer — adapt
+      and continue.
+    - `error`   is a failure — surface it, do not pretend you got an answer.
+
+  ─────────────────────────────────────────────────────────────────
   STEP 1 — LOCATE THE RFP
   ─────────────────────────────────────────────────────────────────
   Determine how the RFP content is available:
@@ -373,25 +414,30 @@ instructions: |
 
   IMPORTANT RULES:
   - CRITICAL DATA SOURCE CHECK: After Steps 3 and 4, check whether BOTH
-    search_foundryiq AND query_fabric_agent returned errors (e.g. endpoint
-    not configured, authentication failed, timeout). If BOTH failed, do NOT
-    proceed to synthesis. Instead:
+    search_foundryiq AND query_fabric_agent returned `status: "error"`
+    envelopes (config / auth / network / timeout / remote). `no_data` does
+    NOT count as a failure here — it is a valid answer. If BOTH calls
+    returned errors, do NOT proceed to synthesis. Instead:
     1. Call log_progress with step_title "CRITICAL — Data Sources Unavailable"
-       and details listing which sources failed and why.
+       and details listing which sources failed, the error `kind`, and the
+       `message` from each envelope.
     2. Return a clear message to the user: "Cannot produce a Bid Intelligence
        Brief because both FoundryIQ and the Fabric Data Agent are unreachable.
        Please check your configuration (FOUNDRYIQ_ENDPOINT, FABRIC_DATA_AGENT_URL,
        RESOURCE_TENANT_ID) and try again."
     3. Do NOT create a document, share it, or report success.
-    If only ONE source failed, proceed but clearly flag the missing data in
-    every affected section.
+    If only ONE source errored (or one returned no_data and the other errored),
+    proceed but clearly flag the missing data in every affected section.
   - Complete ALL steps in a single autonomous run. Never stop mid-workflow
     to ask the user for input unless a critical piece of information is
     genuinely unavailable (e.g. RFP email cannot be found at all).
   - Always call log_progress after each step — the user sees live updates.
-  - If FoundryIQ returns sparse results, broaden the query and try once more.
-  - If Fabric Data Agent returns no exact industry match, trust its fallback
-    matching rules — do not report "no data found".
+  - If FoundryIQ returns `no_data`, broaden the query ONCE with different
+    terms. If the second call also returns `no_data`, proceed and flag the
+    gap — do not retry further.
+  - If query_fabric_agent returns `no_data` for a specific metric, state
+    "Not available in OneLake for this query" in that section. Do not
+    fabricate a value and do not retry the same query.
   - If team availability is unclear, mark as "Unknown — verify before submission"
     rather than assuming available.
   - If no prior client contact is found, state "No prior contact on record" and

@@ -41,6 +41,7 @@ function send(msg) {
 function handleMessage(m) {
   switch (m.type) {
     case "auth_status":     setAuth(m.ok, m.user); break;
+    case "service_status":  renderServiceStatus(m.services || {}); break;
     case "signin_status":   alert(m.message); break;
     case "threads_list":    ingestThreadList(m.threads); break;
     case "thread_created":
@@ -97,6 +98,49 @@ function setAuth(ok, label) {
 
 function signin() {
   send({type: "signin"});
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  Service connectivity pills (MicrosoftIQ group + Redis/Teams)
+// ─────────────────────────────────────────────────────────────────
+const SVC_PILL_IDS = {
+  workiq:       "svcWorkiq",
+  foundryiq:    "svcFoundryiq",
+  fabric_agent: "svcFabricAgent",
+  redis_teams:  "svcRedisTeams",
+};
+
+function renderServiceStatus(services) {
+  for (const [key, elId] of Object.entries(SVC_PILL_IDS)) {
+    const el = document.getElementById(elId);
+    if (!el) continue;
+    const svc = services[key] || { status: "unknown", detail: "" };
+    // Remove any old status class; keep "svc-pill".
+    el.classList.remove("ok", "down", "unconfigured", "unknown");
+    el.classList.add(svc.status || "unknown");
+    const friendly = friendlyServiceLabel(key, svc);
+    el.title = friendly;
+  }
+}
+
+function friendlyServiceLabel(key, svc) {
+  const names = {
+    workiq: "WorkIQ",
+    foundryiq: "FoundryIQ",
+    fabric_agent: "FabricIQ (Fabric Data Agent)",
+    redis_teams: "Redis \u2194 Teams relay",
+  };
+  const stateLabel = {
+    ok: "connected",
+    down: "unavailable",
+    unconfigured: "not configured",
+    unknown: "status unknown",
+  }[svc.status] || svc.status;
+  const detail = svc.detail ? ` \u2014 ${svc.detail}` : "";
+  const when = svc.checked_at
+    ? ` (checked ${new Date(svc.checked_at * 1000).toLocaleTimeString()})`
+    : "";
+  return `${names[key] || key}: ${stateLabel}${detail}${when}`;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -247,6 +291,12 @@ function selectThread(id) {
   renderActiveTab();
   if (id !== SYSTEM_THREAD_ID) {
     send({type: "get_thread", thread_id: id});
+  }
+  // On narrow viewports the threads pane is an overlay — close it after
+  // selection so the user lands on the chat without an extra tap.
+  if (typeof _isXNarrow === "function" && _isXNarrow()) {
+    document.querySelector("aside.threads")?.classList.remove("open");
+    if (typeof _syncBackdrop === "function") _syncBackdrop();
   }
 }
 
@@ -720,10 +770,58 @@ function newThread() {
 }
 
 // ─────────────────────────────────────────────────────────────────
+//  Responsive layout: off-canvas side panes
+//  Mirrors the CSS breakpoints in chat_ui.css. The toggle buttons
+//  in the topbar are hidden by CSS on wide windows, so these helpers
+//  are only reachable on narrow viewports.
+// ─────────────────────────────────────────────────────────────────
+function _isNarrow() { return window.matchMedia("(max-width: 900px)").matches; }
+function _isXNarrow() { return window.matchMedia("(max-width: 700px)").matches; }
+
+function _syncBackdrop() {
+  const bd = document.getElementById("paneBackdrop");
+  if (!bd) return;
+  const anyOpen =
+    document.querySelector("aside.threads.open") ||
+    document.querySelector("section.details.open");
+  bd.classList.toggle("open", !!anyOpen);
+}
+
+function toggleThreadsPane() {
+  const el = document.querySelector("aside.threads");
+  if (!el) return;
+  // Closing the other pane first keeps only one off-canvas pane visible.
+  document.querySelector("section.details")?.classList.remove("open");
+  el.classList.toggle("open");
+  _syncBackdrop();
+}
+
+function toggleDetailsPane() {
+  const el = document.querySelector("section.details");
+  if (!el) return;
+  document.querySelector("aside.threads")?.classList.remove("open");
+  el.classList.toggle("open");
+  _syncBackdrop();
+}
+
+function closeMobilePanes() {
+  document.querySelector("aside.threads")?.classList.remove("open");
+  document.querySelector("section.details")?.classList.remove("open");
+  _syncBackdrop();
+}
+
+// Auto-close panes on viewport resize back to wide so they don't get
+// stuck off-screen when the layout switches back to inline columns.
+window.addEventListener("resize", () => {
+  if (!_isXNarrow()) document.querySelector("aside.threads")?.classList.remove("open");
+  if (!_isNarrow())  document.querySelector("section.details")?.classList.remove("open");
+  _syncBackdrop();
+});
+
+// ─────────────────────────────────────────────────────────────────
 //  Right pane: details / progress / logs
 // ─────────────────────────────────────────────────────────────────
 function switchTab(name) {
-  state.activeTab = name;
   for (const b of document.querySelectorAll(".details .tabs button")) {
     b.classList.toggle("active", b.dataset.tab === name);
   }

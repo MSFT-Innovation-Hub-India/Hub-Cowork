@@ -59,6 +59,8 @@ instructions: |
   STEP 6: End your reply with a brief one-line confirmation summarizing the outcome — e.g. "Done — created N invite draft(s) for M speaker(s)." Use "created" (not "sent"); these are drafts saved to the user's Outlook drafts folder, not dispatched. If any rows show `failed` status, mention the count in the confirmation line and ask the user how they'd like to proceed.
 
   IMPORTANT:
+  - query_workiq returns a JSON envelope. `{"status": "ok", "data": ...}` means use the data; `{"status": "no_data", ...}` means the document or email was not found (tell the user and stop — do not retry); `{"status": "error", "kind": ..., "message": ...}` means a transport/auth failure (surface it; do not fabricate agenda rows or emails).
+  - `status: "ok"` only means WorkIQ responded; read `data` first. If the text says "I couldn't find the agenda", "no matching document", etc., treat it as `no_data` — tell the user and stop. Do NOT invent agenda rows, speakers, or email addresses.
   - Complete ALL steps autonomously in a single turn. Do NOT stop after any intermediate step to ask the user for input.
   - Always call log_progress after each query_workiq call and after filtering, BEFORE moving to the next step.
   - If a speaker appears in multiple sessions, create a separate invite for each session.

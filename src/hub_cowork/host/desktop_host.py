@@ -365,6 +365,15 @@ async def _handler(ws):
             "skills": get_loaded_skills(),
         }))
 
+        # Send current service connectivity snapshot so the UI can paint
+        # green/red dots immediately on connect (without waiting for the
+        # next state change to arrive).
+        try:
+            from hub_cowork.core.service_status import get_monitor as _get_svc_monitor
+            await ws.send(json.dumps(_get_svc_monitor().snapshot()))
+        except Exception:
+            pass
+
         # Send the current thread list so the UI can render the left pane.
         tm = get_thread_manager()
         await ws.send(json.dumps({
@@ -867,6 +876,18 @@ def main():
     pool.configure(on_broadcast=_broadcast, on_notify=notify,
                    on_show_window=_show_window)
 
+    # 1a. Start the service-connectivity monitor so the UI can render
+    # green/red dots per external service (WorkIQ, FoundryIQ, Fabric,
+    # Redis+Teams channel). Every tool envelope + the Redis bridge
+    # already feed state into this monitor via service_status.mark*().
+    try:
+        from hub_cowork.core.service_status import get_monitor as _get_svc_monitor
+        _svc_monitor = _get_svc_monitor()
+        _svc_monitor.set_broadcast(_broadcast)
+        _svc_monitor.start_probes()
+    except Exception as e:
+        logger.warning("Service status monitor failed to start: %s", e)
+
     # Forward thread state changes from ThreadManager to the UI.
     tm = get_thread_manager()
     def _on_thread_event(event: str, thread_id: str, payload: dict):
@@ -912,6 +933,12 @@ def main():
             logger.warning("Redis bridge failed to start: %s — running in local-only mode", e)
     else:
         logger.info("Redis bridge disabled — AZ_REDIS_CACHE_ENDPOINT not set")
+        try:
+            from hub_cowork.core.service_status import get_monitor as _get_svc_monitor
+            _get_svc_monitor().mark("redis_teams", "unconfigured",
+                                    "AZ_REDIS_CACHE_ENDPOINT not set")
+        except Exception:
+            pass
 
     # 2. Start WebSocket server in a background thread
     server_thread = threading.Thread(target=_run_server, daemon=True)

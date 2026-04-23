@@ -7,6 +7,8 @@ import logging
 import subprocess
 import sys
 
+from ._tool_result import ok, no_data, error
+
 logger = logging.getLogger("hub_se_agent")
 
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
@@ -61,6 +63,17 @@ def _sanitize_for_cli(text: str) -> str:
     return text
 
 
+# Note: we intentionally do NOT sniff prose for "no matching data" phrases.
+# Deciding whether a free-text answer from workiq means "empty result" vs
+# "here is the answer" is a semantic judgment that belongs in the calling
+# skill's LLM, not in this tool. The tool only reports objective signals:
+#   - transport failure  -> status: "error"
+#   - completely empty stdout -> status: "no_data"  (structural)
+#   - anything else -> status: "ok" with the raw response
+# Skill instructions tell the LLM to read `ok` content and recognize when
+# the assistant text says it couldn't find the data.
+
+
 SCHEMA = {
     "type": "function",
     "name": "query_workiq",
@@ -87,10 +100,17 @@ SCHEMA = {
 
 
 def handle(arguments: dict, *, on_progress=None, workiq_cli=None, **kwargs) -> str:
-    """Run WorkIQ CLI and return the output."""
+    """Run WorkIQ CLI and return the output as a JSON envelope string.
+
+    See `_tool_result.ENVELOPE_DESCRIPTION` for the contract.
+    """
+    tool = "query_workiq"
     question = arguments["question"]
     if not workiq_cli:
-        return "Error: workiq CLI not found. Install it or set WORKIQ_PATH in .env"
+        return error(
+            tool, "config",
+            "WorkIQ CLI not found. Install it or set WORKIQ_PATH in .env.",
+        )
     logger.info("[WorkIQ] Querying: %s", question[:200])
     if on_progress:
         # Send the full question — the UI can truncate for display but will
@@ -121,7 +141,11 @@ def handle(arguments: dict, *, on_progress=None, workiq_cli=None, **kwargs) -> s
             )
         stderr_text = _decode(result.stderr).strip()
         if result.returncode != 0:
-            return f"WorkIQ error (exit code {result.returncode}): {stderr_text}"
+            return error(
+                tool, "remote",
+                f"WorkIQ CLI exited with code {result.returncode}: "
+                f"{stderr_text or '(no stderr)'}",
+            )
         output = _decode(result.stdout).strip()
         logger.info(
             "[WorkIQ] Response received (stdout=%d chars, stderr=%d chars, rc=%d)",
@@ -136,8 +160,18 @@ def handle(arguments: dict, *, on_progress=None, workiq_cli=None, **kwargs) -> s
             output = stderr_text
         if on_progress:
             on_progress("tool", f"WorkIQ responded ({len(output)} chars)")
-        return output
+        if not output:
+            logger.info("[WorkIQ] Empty response (structural no_data)")
+            return no_data(tool, "(empty response)", query=question)
+        return ok(tool, output)
     except subprocess.TimeoutExpired:
-        return "WorkIQ timed out after 120 seconds."
+        return error(
+            tool, "timeout",
+            "WorkIQ CLI timed out after 120 seconds. The service did not "
+            "respond in time; this is a transport failure, not an empty result.",
+        )
+    except FileNotFoundError as e:
+        return error(tool, "config", f"WorkIQ CLI binary not found: {e}")
     except Exception as e:
-        return f"Failed to call WorkIQ: {e}"
+        logger.error("[WorkIQ] Unexpected failure: %s", e, exc_info=True)
+        return error(tool, "unexpected", f"Failed to call WorkIQ: {e}")
