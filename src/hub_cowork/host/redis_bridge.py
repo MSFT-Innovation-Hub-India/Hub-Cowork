@@ -324,6 +324,8 @@ class RedisBridge:
         """
         last_id = "$"  # only new messages from this point forward
         reconnect_delay = _INITIAL_CONNECT_BASE_DELAY
+        was_disconnected = False
+        last_keepalive_mark = 0.0
         while not self._stopping.is_set():
             try:
                 self._ensure_connected()
@@ -333,6 +335,21 @@ class RedisBridge:
                 )
                 # Successful round-trip — reset reconnect backoff.
                 reconnect_delay = _INITIAL_CONNECT_BASE_DELAY
+                # If we previously flipped the tile to "down" because of a
+                # transient blip, restore it to "ok" now that we're talking
+                # to Redis again. Without this the dot stays red until the
+                # 30-minute heartbeat re-registers the presence key.
+                if was_disconnected:
+                    _svc_mark("ok", "")
+                    was_disconnected = False
+                # Keep-alive: refresh the "checked at" timestamp on the
+                # service tile every ~60s. The active probe loop skips
+                # redis_teams, so without this the tooltip would freeze at
+                # the time of the last status transition.
+                now = time.time()
+                if now - last_keepalive_mark >= 60.0:
+                    _svc_mark("ok", "")
+                    last_keepalive_mark = now
                 if not result:
                     continue
 
@@ -347,6 +364,7 @@ class RedisBridge:
                     e, reconnect_delay,
                 )
                 _svc_mark("down", f"connection lost: {e}")
+                was_disconnected = True
                 self._client = None
                 self._stopping.wait(timeout=reconnect_delay)
                 reconnect_delay = min(reconnect_delay * 2, _INITIAL_CONNECT_MAX_DELAY)

@@ -113,9 +113,11 @@ def handle(arguments: dict, *, on_progress=None, workiq_cli=None, **kwargs) -> s
         )
     logger.info("[WorkIQ] Querying: %s", question[:200])
     if on_progress:
-        # Send the full question — the UI can truncate for display but will
-        # show the complete text in the tooltip and Progress tab.
-        on_progress("tool", f"Querying WorkIQ: {question}")
+        # Keep the user-facing headline short and hardcoded — the full
+        # model-generated query is already in the logger above (and visible
+        # in the per-thread Logs pane). Don't leak agent-internal phrasing
+        # into the chat bubble.
+        on_progress("tool", "Searching your work data")
     # Sanitize Unicode chars that cause mojibake on Windows CLI
     question = _sanitize_for_cli(question)
     try:
@@ -159,7 +161,7 @@ def handle(arguments: dict, *, on_progress=None, workiq_cli=None, **kwargs) -> s
         if not output and stderr_text:
             output = stderr_text
         if on_progress:
-            on_progress("tool", f"WorkIQ responded ({len(output)} chars)")
+            on_progress("tool", "Got results from your work data")
         if not output:
             logger.info("[WorkIQ] Empty response (structural no_data)")
             return no_data(tool, "(empty response)", query=question)

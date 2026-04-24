@@ -608,6 +608,63 @@ Every invocation carries a `request_id` (`uuid.uuid4().hex[:8]`) used for correl
 
 ---
 
+## Service Status Monitor
+
+The top-bar dots (`MicrosoftIQ: WorkIQ • FoundryIQ • FabricIQ` and `Teams: Relay`) are driven by `core/service_status.py`, a thread-safe singleton (`_ServiceStatusMonitor`) that tracks reachability for the four external services the agent talks to:
+
+| Service key   | What it covers                                |
+|---------------|-----------------------------------------------|
+| `workiq`      | Local WorkIQ CLI (`workiq.cmd` on PATH)       |
+| `foundryiq`   | FoundryIQ Azure AI Search knowledge base      |
+| `fabric_agent`| Fabric Data Agent (`assistants` API)          |
+| `redis_teams` | Redis bridge + agent presence registration    |
+
+**State values:** `ok`, `down`, `unconfigured`, `unknown`. Each tile carries `status`, free-form `detail` (shown in the tooltip), and `checked_at` (epoch seconds).
+
+### Two update paths
+
+1. **Passive — every tool call.** Tool envelopes (`_tool_result`) flow through `mark_from_envelope(tool, status, kind)`:
+   - `ok` or `no_data` → `ok` (semantic "no match" is still reachable, so the dot stays green).
+   - `error` with `kind="config"` → `unconfigured` (greys out, signals "set the env var").
+   - `error` with any other kind → `down`.
+
+2. **Active — background probe thread.** `start_probes()` (called once from `desktop_host.main`) runs a daemon loop that re-probes services whose state is `unknown` or older than `_PROBE_INTERVAL` (120s). Probes use the `_PROBE_TIMEOUT` (6s) budget and **never trigger interactive auth** — `_is_signed_in()` short-circuits to `unknown` until the user has signed in, so a probe can't pop a browser window from a background thread.
+
+### Probe semantics — important asymmetry
+
+| Probe         | What it actually does                                                                 |
+|---------------|---------------------------------------------------------------------------------------|
+| `workiq`      | `workiq --version` via `subprocess` (no real query, no telemetry pollution).          |
+| `foundryiq`   | `GET /knowledgebases('{kb}')` against the configured KB. Real HTTP round-trip.        |
+| `fabric_agent`| **Token acquisition only** (`cred.get_token("https://api.fabric.microsoft.com/.default")`) — no actual call to the agent (which would spin up a Fabric thread + run and cost real compute). |
+
+**The Fabric probe is intentionally shallow** — it can false-positive if the user has Fabric entitlement in `AZURE_TENANT_ID` but the actual Fabric workspace lives in a *different* `RESOURCE_TENANT_ID`. The April 2026 tenant-mismatch regression surfaced this: FoundryIQ went red (real HTTP call rejected with 401), Fabric stayed green (token mint succeeded in the wrong tenant), and only the actual user query revealed Fabric was also broken. If you ever see this combination again, suspect cross-tenant credential reuse.
+
+### Why `redis_teams` is handled differently
+
+The Redis tile is **not** in the active-probe rotation (`_probe_once` explicitly iterates only over `workiq`, `foundryiq`, `fabric_agent`). The bridge owns the signal first-hand because:
+
+- "Channel up" means *Redis connected AND the agent presence key is registered* — only the bridge knows both.
+- The bridge runs a blocking `XREAD` poller, so an external probe couldn't safely interrogate the same connection.
+- Re-running the presence-registration probe from a background thread would race the heartbeat.
+
+So `host/redis_bridge.py` updates the tile directly via a tiny `_svc_mark()` helper. The state transitions:
+
+- **Initial connect succeeds → presence key written:** `_register_agent()` calls `_svc_mark("ok", "")`. This is the *real* "Teams reachable" moment.
+- **30-min heartbeat:** re-registers the presence key (TTL refresh), re-marks `ok`.
+- **Inbox poller `RedisConnectionError` / `BusyLoadingError`:** `_svc_mark("down", "connection lost: ...")` and enter exponential-backoff reconnect.
+- **Reconnect succeeds (next `XREAD` round-trips):** the poller tracks `was_disconnected` and flips back to `_svc_mark("ok", "")` on the very next successful loop iteration.
+- **Keep-alive every ~60s** inside the poller calls `_svc_mark("ok", "")` so the tooltip's `checked_at` doesn't freeze between rare status changes.
+- **Bridge stops:** `_svc_mark("down", "bridge stopped")`.
+
+The keep-alive matters because `mark()` always broadcasts a snapshot (even when the status didn't change) so the UI's "checked at NN:NN PM" tooltip stays current. Without the periodic call from inside the Redis poller, the Relay timestamp would freeze at the time of the last *transition*, which can easily be hours ago for a healthy bridge.
+
+### Broadcast contract
+
+`mark()` always invokes `_on_change(snapshot)` (wired by `desktop_host` to broadcast over WebSocket as `{"type": "service_status", "services": {...}}`). Cost is negligible — `mark` is invoked at most ~3-4 times/min across all services in steady state. Snapshots are also pushed at WebSocket connect time so a freshly opened UI paints the dots immediately without waiting for the next state change.
+
+---
+
 ## Configuration
 
 Set in `.env` at the repo root, or in `src/hub_cowork/assets/.env.defaults` for shipped defaults, or via the Settings UI (which writes `_env_overrides` into `~/.hub-cowork/hub_config.json`).

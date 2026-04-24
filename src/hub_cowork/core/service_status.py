@@ -108,7 +108,8 @@ class _ServiceStatusMonitor:
         status: ServiceStatus,
         detail: str = "",
     ) -> None:
-        """Update one service. Broadcasts a snapshot if the status actually changed."""
+        """Update one service. Broadcasts a snapshot every call so the UI's
+        "checked at" timestamp stays fresh even when status is unchanged."""
         if service not in self._state:
             return
         changed = False
@@ -123,7 +124,10 @@ class _ServiceStatusMonitor:
             logger.info(
                 "[service_status] %s -> %s (%s)", service, status, detail or "-"
             )
-            self._broadcast()
+        # Always broadcast — even when status didn't change — so the UI
+        # tooltip can show the latest probe timestamp instead of the time
+        # of the last state transition.
+        self._broadcast()
 
     def mark_from_envelope(self, tool: str, envelope_status: str, kind: str = "") -> None:
         """Record the outcome of a tool call.

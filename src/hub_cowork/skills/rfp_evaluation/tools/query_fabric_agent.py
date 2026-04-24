@@ -276,7 +276,8 @@ def handle(arguments: dict, *, on_progress=None, **kwargs) -> str:
 
     logger.info("[FabricAgent] Querying Fabric Data Agent directly: %s", question[:150])
     if on_progress:
-        on_progress("tool", f"Querying Fabric Data Agent: {question}")
+        # Hardcoded headline — full model-generated query stays in the logger.
+        on_progress("tool", "Querying Fabric data agent")
 
     thread_id: str | None = None
     client = None
@@ -315,9 +316,7 @@ def handle(arguments: dict, *, on_progress=None, **kwargs) -> str:
             run = client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
             if run.status != last_status:
                 logger.info("[FabricAgent] run status: %s (%.1fs elapsed)", run.status, elapsed)
-                if on_progress:
-                    on_progress("tool", f"Fabric run: {run.status} ({int(elapsed)}s)")
-                last_status = run.status
+            last_status = run.status
 
         if run.status != "completed":
             err = getattr(run, "last_error", None)
@@ -357,7 +356,7 @@ def handle(arguments: dict, *, on_progress=None, **kwargs) -> str:
 
         logger.info("[FabricAgent] Response received (%d chars)", len(result_text))
         if on_progress:
-            on_progress("tool", f"Fabric Agent responded ({len(result_text)} chars)")
+            on_progress("tool", "Got results from Fabric data agent")
         return ok(tool, result_text)
 
     except ImportError as e:

@@ -242,8 +242,8 @@ def handle(arguments: dict, *, on_progress=None, **kwargs) -> str:
 
     logger.info("[FoundryIQ] Searching: %s (top=%d)", query[:150], top)
     if on_progress:
-        preview = query[:100] + "..." if len(query) > 100 else query
-        on_progress("tool", f"Searching FoundryIQ: {preview}")
+        # Hardcoded headline — full model-generated query stays in the logger.
+        on_progress("tool", "Searching FoundryIQ knowledge base")
 
     # Correct Azure AI Search Knowledge Base retrieval endpoint:
     # POST /knowledgebases('{kb_name}')/retrieve?api-version=...
@@ -311,7 +311,7 @@ def handle(arguments: dict, *, on_progress=None, **kwargs) -> str:
 
         logger.info("[FoundryIQ] Response received (%d chars, %d refs)", len(answer_text), len(refs))
         if on_progress:
-            on_progress("tool", f"FoundryIQ responded ({len(answer_text)} chars, {len(refs)} sources)")
+            on_progress("tool", f"Found {len(refs)} matching document(s) in FoundryIQ")
 
         return ok(tool, answer_text, meta={"references": len(refs)})
 
