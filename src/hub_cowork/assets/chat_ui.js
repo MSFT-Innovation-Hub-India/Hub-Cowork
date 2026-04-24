@@ -79,7 +79,7 @@ function handleMessage(m) {
     case "system_query_complete": onSystemQueryComplete(m); break;
     case "system_query_error":    onSystemQueryError(m); break;
     case "remote_message":  appendSystemNotice("Remote msg from " + m.sender + ": " + m.text); break;
-    case "skills_list":     break; // informational only
+    case "skills_list":     _loadedSkills = Array.isArray(m.skills) ? m.skills : []; renderSkillsModal(); break;
     case "config_data":     onConfigData(m.config || {}); break;
     case "config_saved":    onConfigSaved(m); break;
     case "validate_speakers_started":  onSpeakersValidating(m); break;
@@ -2441,6 +2441,98 @@ function showAbout() {
   );
 }
 
+// ─────────────────────────────────────────────────────────────────
+//  Skills modal — list of skills loaded by the agent, grouped by folder
+// ─────────────────────────────────────────────────────────────────
+let _loadedSkills = [];
+
+function openSkillsModal() {
+  const m = document.getElementById("skillsModal");
+  if (!m) return;
+  renderSkillsModal();
+  m.classList.add("open");
+}
+
+function closeSkillsModal() {
+  const m = document.getElementById("skillsModal");
+  if (m) m.classList.remove("open");
+}
+
+function onSkillsBackdrop(ev) {
+  if (ev && ev.target && ev.target.id === "skillsModal") closeSkillsModal();
+}
+
+function _prettyGroupName(g) {
+  if (!g) return "General";
+  return g.replace(/[_-]+/g, " ")
+          .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function _esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function renderSkillsModal() {
+  const body = document.getElementById("skillsBody");
+  if (!body) return;
+  const skills = _loadedSkills || [];
+  if (!skills.length) {
+    body.innerHTML = '<div class="skills-empty">No skills loaded yet.</div>';
+    return;
+  }
+  // Group by `group` (parent folder); top-level skills go under "General".
+  const groups = new Map();
+  for (const s of skills) {
+    const key = s.group || "";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(s);
+  }
+  // Sort: top-level ("General") first, then alphabetical groups.
+  const ordered = [...groups.keys()].sort((a, b) => {
+    if (a === "" && b !== "") return -1;
+    if (b === "" && a !== "") return 1;
+    return a.localeCompare(b);
+  });
+
+  const html = ordered.map((key) => {
+    const items = groups.get(key).slice().sort((a, b) => {
+      // Internal/chained skills last; otherwise alphabetical.
+      if (!!a.internal !== !!b.internal) return a.internal ? 1 : -1;
+      return a.name.localeCompare(b.name);
+    });
+    const title = _prettyGroupName(key);
+    const skillsHtml = items.map((s) => {
+      // Strip the [INTERNAL...] prefix from displayed description.
+      const desc = String(s.description || "").replace(/^\[INTERNAL[^\]]*\]\s*/i, "").trim();
+      const badges = [];
+      if (s.model) badges.push(`<span class="badge model-${_esc(s.model)}">${_esc(s.model)}</span>`);
+      if (s.internal) badges.push('<span class="badge internal">internal</span>');
+      if (s.next_skill) badges.push(`<span class="badge chain">→ ${_esc(s.next_skill)}</span>`);
+      const tools = (s.tools || []).map(t => `<code class="tool">${_esc(t)}</code>`).join(" ");
+      return `
+        <div class="skill-card${s.internal ? ' internal' : ''}">
+          <div class="skill-row">
+            <span class="skill-name">${_esc(s.name)}</span>
+            <span class="skill-badges">${badges.join(" ")}</span>
+          </div>
+          <div class="skill-desc">${_esc(desc) || '<i>No description.</i>'}</div>
+          ${tools ? `<div class="skill-tools">${tools}</div>` : ""}
+        </div>
+      `;
+    }).join("");
+    return `
+      <section class="skill-group">
+        <h3 class="skill-group-title">${_esc(title)} <span class="skill-group-count">${items.length}</span></h3>
+        <div class="skill-group-body">${skillsHtml}</div>
+      </section>
+    `;
+  }).join("");
+
+  body.innerHTML = html;
+}
+
 // Boot
 setDetailsCollapsed(true);
 connect();
@@ -2465,5 +2557,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     const m = document.getElementById("settingsModal");
     if (m && m.classList.contains("open")) closeSettings();
+    const sk = document.getElementById("skillsModal");
+    if (sk && sk.classList.contains("open")) closeSkillsModal();
   }
 });

@@ -328,17 +328,31 @@ logger.info("Skills loaded: %s", list(_skills.keys()))
 
 
 def get_loaded_skills() -> list[dict]:
-    """Return a summary of all loaded skills for the UI (excludes internal skills)."""
-    return [
-        {
+    """Return a summary of all loaded skills for the UI.
+
+    Includes internal/chained skills too — flagged so the UI can group or
+    visually de-emphasize them. The `group` field is the immediate parent
+    folder under skills/ (or None for top-level skills) so the UI can show
+    chained skill families together.
+    """
+    out: list[dict] = []
+    for s in _skills.values():
+        try:
+            rel = Path(s.source_file).resolve().relative_to(_SKILLS_DIR.resolve())
+            parts = rel.parts
+            group = parts[0] if len(parts) > 1 else None
+        except Exception:
+            group = None
+        out.append({
             "name": s.name,
             "description": s.description,
             "model": s.model_tier,
             "tools": s.tool_names,
-        }
-        for s in _skills.values()
-        if not s.description.startswith("[INTERNAL")
-    ]
+            "group": group,
+            "internal": s.description.upper().startswith("[INTERNAL"),
+            "next_skill": s.next_skill,
+        })
+    return out
 
 
 # ---------------------------------------------------------------------------

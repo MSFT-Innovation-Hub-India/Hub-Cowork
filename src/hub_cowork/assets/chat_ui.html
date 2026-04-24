@@ -49,6 +49,10 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 4 3 10 9 10"/></svg>
           Restart agent
         </button>
+        <button role="menuitem" onclick="closeAppMenu(); openSkillsModal();">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l2.39 4.84L20 7.62l-4 3.9.94 5.48L12 14.77l-4.94 2.6L8 11.52l-4-3.9 5.61-.78L12 2z"/></svg>
+          Skills
+        </button>
         <button role="menuitem" onclick="closeAppMenu(); showAbout();">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
           About Hub Cowork
@@ -250,6 +254,23 @@
       <span class="msg" id="cfgMsg"></span>
       <button class="secondary" onclick="closeSettings()">Cancel</button>
       <button class="primary" id="cfgSaveBtn" onclick="saveSettings()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── Skills modal ───────────────────────────────────────────── -->
+<div class="modal-backdrop" id="skillsModal" onclick="onSkillsBackdrop(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="title">Skills</span>
+      <button class="x" onclick="closeSkillsModal()" title="Close">×</button>
+    </div>
+    <div class="modal-body" id="skillsBody">
+      <div class="skills-empty">Loading skills…</div>
+    </div>
+    <div class="modal-footer">
+      <span class="msg" id="skillsMsg"></span>
+      <button class="secondary" onclick="closeSkillsModal()">Close</button>
     </div>
   </div>
 </div>
