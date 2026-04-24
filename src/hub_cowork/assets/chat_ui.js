@@ -211,13 +211,13 @@ function renderThreadList() {
   }, true));
 
   const showRunning = document.getElementById("filterRunning").checked;
-  const showAwaiting = document.getElementById("filterAwaiting").checked;
   const showDone = document.getElementById("filterDone").checked;
 
   const list = Array.from(state.threads.values())
     .filter(t => {
-      if (["running", "active"].includes(t.status)) return showRunning;
-      if (t.status === "awaiting_user") return showAwaiting;
+      // "Running" covers anything in-flight (running / active / awaiting user input).
+      if (["running", "active", "awaiting_user"].includes(t.status)) return showRunning;
+      // "Completed" covers terminal states (completed / failed).
       if (["completed", "failed"].includes(t.status)) return showDone;
       return true;
     })
