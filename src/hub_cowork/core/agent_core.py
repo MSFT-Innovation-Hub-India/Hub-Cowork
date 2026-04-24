@@ -53,9 +53,10 @@ _AUTH_RECORD_PATH.parent.mkdir(exist_ok=True)
 
 def _create_credential(record=None):
     """Create credential, optionally with a saved AuthenticationRecord for silent refresh."""
-    return InteractiveBrowserCredential(
+    from hub_cowork.core.auth_credential import make_credential
+    return make_credential(
         tenant_id=_tenant_id,
-        cache_persistence_options=_cache_options,
+        cache_name="hub_cowork",
         authentication_record=record,
     )
 

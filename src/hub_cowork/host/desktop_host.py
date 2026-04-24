@@ -700,6 +700,16 @@ def _set_taskbar_icon():
             user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon_small)
 
         logger.info("Taskbar icon set via Win32 (hwnd=%s)", hwnd)
+
+        # Register the HWND with the auth helper so future WAM (broker)
+        # credential prompts are parented to our app window instead of
+        # appearing as a free-floating dialog.
+        try:
+            from hub_cowork.core.auth_credential import set_parent_window_handle
+            if hwnd:
+                set_parent_window_handle(int(hwnd))
+        except Exception as e:
+            logger.debug("Could not register parent HWND for auth: %s", e)
     except Exception as e:
         logger.warning("Failed to set taskbar icon: %s", e)
 

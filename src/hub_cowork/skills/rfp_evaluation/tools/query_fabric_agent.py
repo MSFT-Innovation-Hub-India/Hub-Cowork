@@ -166,22 +166,15 @@ def _get_credential(tenant_id: str, auth_mode: str):
         logger.info("[FabricAgent] Using AzureCliCredential for tenant %s", tenant_id)
         cred = AzureCliCredential(tenant_id=tenant_id) if tenant_id else AzureCliCredential()
     else:
-        from azure.identity import InteractiveBrowserCredential
-        try:
-            from azure.identity import TokenCachePersistenceOptions
-            cache_opts = TokenCachePersistenceOptions(name="rfp_agent_foundryiq")
-            logger.info("[FabricAgent] Using InteractiveBrowserCredential (cached) for tenant %s", tenant_id)
-            cred = InteractiveBrowserCredential(
-                tenant_id=tenant_id,
-                redirect_uri="http://localhost:8400",
-                cache_persistence_options=cache_opts,
-            )
-        except ImportError:
-            logger.warning("[FabricAgent] Persistent cache not available; using non-cached credential")
-            cred = InteractiveBrowserCredential(
-                tenant_id=tenant_id,
-                redirect_uri="http://localhost:8400",
-            )
+        from hub_cowork.core.auth_credential import make_credential, is_broker_available
+        logger.info("[FabricAgent] Using %s credential for tenant %s",
+                    "WAM broker" if is_broker_available() else "InteractiveBrowser",
+                    tenant_id)
+        cred = make_credential(
+            tenant_id=tenant_id,
+            cache_name="rfp_agent_foundryiq",
+            redirect_uri="http://localhost:8400",
+        )
 
     _cached_credential = cred
     try:

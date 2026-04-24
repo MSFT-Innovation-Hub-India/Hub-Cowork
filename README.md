@@ -24,13 +24,15 @@ Hub Cowork exhibits the design traits of emerging local‑agent platforms (Claud
 | **Three-way inbox classifier** | Incoming Teams messages are LLM-classified as `new` (start a thread), `existing` (continue a running thread, with `#thread-xxxx` tag as fast-path), or `system` (instant non-queued reply). |
 | **Human-in-the-loop confirmation** | Skills can pause mid-flow with `[AWAITING_CONFIRMATION]`. The thread parks at status `awaiting_user`, persists state, and resumes on the user's next message (local click or Teams reply). |
 | **Real-time status** | Ask "what's the status of my request?" any time — a non-queued system skill reports progress milestones without interrupting running work. |
-| **Service connectivity indicators** | Header pills show live green/red/grey status for each backing service (WorkIQ CLI, FoundryIQ, Fabric Data Agent, Redis/Teams bridge). Updated passively from tool envelopes and refreshed by lightweight background probes. |
+| **Service connectivity indicators** | Header pills show live green/red/grey status for each backing service (WorkIQ CLI, FoundryIQ, Fabric Data Agent, Redis/Teams bridge). Updated passively from tool envelopes and refreshed by lightweight background probes. Pill text labels collapse to dots on narrower windows. |
 | **Skills-driven extensibility** | Each capability is a declarative YAML file. Add a new skill by dropping a YAML file into `src/hub_cowork/skills/` — no code changes. |
-| **Settings UI with env editor** | Gear icon in the chat header opens a modal to edit hub config (speakers, agenda folder) and environment variables (endpoints, model names, Redis), then restart. |
+| **Settings UI with env editor** | Opened from the **kebab (⋮) “More” menu in the top-right of the topbar**, which also exposes Restart agent, Skills, and About Hub Cowork. The Settings modal edits hub config (hub name, speakers, topic catalog, agenda folder, agenda template) and environment variables (endpoints, model names, Redis), with a one-click Restart agent button. A dismissible **config banner** appears at the top of the window when required settings are missing, with a direct shortcut into the Settings modal. |
+| **Responsive three-pane UI** | Desktop layout is a 3-column grid (Threads / Chat / Logs). Below 1200px the columns shrink, below 1000px the service-pill text labels hide, below 900px the right Logs pane becomes an off-canvas overlay (revealed by the chat-header *Show logs* button), and below 700px the left Threads pane also becomes an off-canvas overlay (revealed by a hamburger button in the topbar). A semi-transparent backdrop closes overlay panes on click. The right pane is also collapsible on the desktop layout (“details-collapsed”). |
+| **In-chat step cards** | Each progress / milestone event from the agent renders as a persistent inline step card in the chat (no separate Progress timeline). The right pane is now Logs-only and collapses by default until the user opens it. |
 | **Background operation** | Runs invisibly via `pythonw.exe` — no console window, no taskbar clutter until you summon it. |
-| **System tray icon** | Pure Win32 (zero extra deps). Left-click to show/hide, right-click for context menu. |
-| **Toast notifications** | Native Windows toasts on task start/complete. Click a toast to open the UI. |
-| **Persistent authentication** | Sign in once; `InteractiveBrowserCredential` with persistent token cache refreshes silently across restarts. |
+| **System tray icon** | Pure Win32 (zero extra deps). Left-click to show/hide, right-click for context menu. **Red-dot badge + tooltip count** appears whenever a remote Teams/Redis message arrives while the window is hidden, and clears automatically when you bring the window back up. |
+| **Toast notifications** | Reserved for sign-in feedback ("Opening browser for Azure sign-in", success/failure) and the "already running" launch nudge. Per-task start/complete toasts have been **removed** — the tray-icon badge is the silent, non-disruptive indicator for incoming Teams work. |
+| **Persistent authentication** | Sign in once; the WAM broker credential with persistent token cache refreshes silently across restarts. See [Authentication](#authentication) for the full per-tenant design. |
 | **Auto-start at Windows login** | Install script registers the assistant to launch at startup. |
 
 ---
@@ -140,7 +142,7 @@ Hub Cowork is **skills-driven** — each capability is a declarative YAML file r
 
 **Inter-phase context** — Passed via the `engagement_context` tool, which reads/writes JSON under `~/.hub-cowork/engagement_context/<customer>.json`. Each phase appends its output (metadata, goals, agenda) to the shared file.
 
-**Hub configuration** — Phase 3 reads default session start time and speaker-by-topic mapping via `get_hub_config`. Users edit these in the ⚙ Settings UI.
+**Hub configuration** — Phase 3 reads default session start time and speaker-by-topic mapping via `get_hub_config`. Users edit these from the kebab (⋮) menu → **Settings** in the topbar.
 
 **Engagement type detection** — Phase 1 classifies as `ADS`, `RAPID_PROTOTYPE`, `BUSINESS_ENVISIONING`, `SOLUTION_ENVISIONING`, `HACKATHON`, or `CONSULT`. Phase 3 applies type-specific agenda patterns.
 
@@ -266,7 +268,7 @@ All callers — Python modules and skills alike — see env-var values from the 
 
 ### Settings UI
 
-The ⚙ gear icon in the chat header opens a modal with two sections:
+The kebab (⋮) **More** menu in the top-right of the topbar exposes **Settings**, **Restart agent**, **Skills**, and **About Hub Cowork**. The Settings modal has two sections:
 
 - **Hub settings** — top-level keys in `hub_config.json` (hub name, default session start time, speakers by topic, agenda output folder, agenda template path).
 - **Environment variables** — the env editor. Every value typed here is saved to the `_env_overrides` map in `~/.hub-cowork/hub_config.json` and applied to `os.environ` on the next launch (the UI offers a one-click restart).
@@ -295,14 +297,14 @@ After changing env values you need to restart so module-level reads (e.g. `ENDPO
 │  ┌────────────────────┐       │  │  — classifies local requests into   │  │   │
 │  │ System tray icon   │       │  │    skill | "none" (greeting)        │  │   │
 │  │ (Win32 ctypes)     │       │  └─────────────────┬───────────────────┘  │   │
-│  └────────────────────┘       │                    │                      │   │
-│                               │              ┌─────▼─────────┐            │   │
-│  ┌─────────────────────┐      │              │ ThreadManager │            │   │
-│  │ Toast notifications │      │              │   observers,  │            │   │
-│  │ (winotify)          │      │              │  ContextVar   │            │   │
-│  └─────────────────────┘      │              └─────┬─────────┘            │   │
-│                               │                    │                      │   │
-│                               │           ┌────────▼─────────────────────┐│   │
+│  │ + red-dot badge    │       │                    │                      │   │
+│  │ on remote unreads  │       │              ┌─────▼─────────┐            │   │
+│  └────────────────────┘       │              │ ThreadManager │            │   │
+│                               │              │   observers,  │            │   │
+│  ┌─────────────────────┐      │              │  ContextVar   │            │   │
+│  │ Sign-in toasts only │      │              └─────┬─────────┘            │   │
+│  │ (winotify)          │      │                    │                      │   │
+│  └─────────────────────┘      │           ┌────────▼─────────────────────┐│   │
 │                               │           │   ExecutorPool               ││   │
 │                               │           │  one _ThreadWorker per       ││   │
 │                               │           │  active conversation; idle-  ││   │
@@ -320,9 +322,11 @@ After changing env values you need to restart so module-level reads (e.g. `ENDPO
 │                               │   ┌─────────▼─┐   ┌───▼──────────────┐    │   │
 │                               │   │ Tool layer│   │ Progress stream  │    │   │
 │                               │   │ ...       │   │ → UI (WS)        │    │   │
-│                               │   │           │   │ → Toast          │    │   │
 │                               │   │           │   │ → thread.progress│    │   │
-│                               │   └─────────┬─┘   │ → Redis outbox   │    │   │
+│                               │   │           │   │ → Redis outbox   │    │   │
+│                               │   └─────────┬─┘   │ → thread_unread  │    │   │
+│                               │             │     │   (Teams → tray  │    │   │
+│                               │             │     │    badge)        │    │   │
 │                               │             │     └──────────────────┘    │   │
 │                               │   ┌─────────▼─────────────────────────┐   │   │
 │                               │   │    LocalJsonThreadStore           │   │   │
@@ -373,13 +377,19 @@ After changing env values you need to restart so module-level reads (e.g. `ENDPO
 
 ### How it all fits together
 
-1. **Single-process launcher** (`python -m hub_cowork` → `hub_cowork/__main__.py` → `host/desktop_host.py::main`) — applies `_env_overrides` from the Settings UI, loads `.env` and packaged `.env.defaults`, starts the WebSocket/HTTP servers, system tray, optional Redis bridge, shows a startup toast, and enters the pywebview event loop.
+1. **Single-process launcher** (`python -m hub_cowork` → `hub_cowork/__main__.py` → `host/desktop_host.py::main`) — applies `_env_overrides` from the Settings UI, loads `.env` and packaged `.env.defaults`, starts the WebSocket/HTTP servers, system tray, optional Redis bridge, and enters the pywebview event loop.
 
 2. **WebSocket server (port 18080)** — JSON protocol, typed messages for threads, progress, logs, config, and remote-message notifications. See [WebSocket protocol](#websocket-protocol) below.
 
-3. **HTTP server (port 18081)** — Handles toast notification clicks: `GET /show` brings up the pywebview window.
+3. **HTTP server (port 18081)** — Handles toast-click callbacks (`GET /show` brings up the pywebview window) for the few remaining toasts (sign-in, "already running").
 
-4. **Three-pane pywebview UI** — Thread list (active + archived), chat, and a details/progress/logs pane per thread. Each thread has its own progress stream and code log.
+4. **pywebview UI** — a responsive 3-column desktop layout (Threads / Chat / Logs) plus dialogs:
+   - **Topbar**: title, four service-status pills (WorkIQ, FoundryIQ, FabricIQ, Teams Relay), the Sign-in button (only shown until auth completes), and a **kebab “More” (⋮) menu in the top-right** that opens **Settings**, **Restart agent**, **Skills**, and **About Hub Cowork**. A hamburger toggle on the left and a *Show logs* toggle on the right reveal the side panes when they collapse on narrow widths.
+   - **Threads pane (left)**: the always-pinned `System` thread on top, a `+ New task` button, a `Show archived` toggle, two checkbox filters (`Running` / `Completed`), the active and archived task lists, and a footer that shows the auth dot + signed-in user. The old per-row action buttons and standalone auth banner have been removed in favour of this cleaner layout.
+   - **Chat pane (centre)**: thread tag, title, status, and a small set of icon-only header actions — *Archive*, *Restore from archive*, *Clear conversation* (System thread only), and *Show logs* (toggles the right pane). User and assistant messages render as bubbles; agent progress / milestone events render as **persistent in-chat step cards** instead of a separate timeline.
+   - **Logs pane (right)**: a single Logs tab streaming the per-thread `code_log`. Collapsible on the desktop layout (`details-collapsed`); turns into an off-canvas overlay below 900px, with a backdrop that closes it on click. Below 700px the Threads pane also becomes an off-canvas overlay.
+   - **Composer**: textarea with auto-grow, Send button, and a Stop button that appears while a thread is running. A *composer notice* line above the input surfaces things like `awaiting_user` hints.
+   - **Config banner**: a dismissible banner at the top of the window appears when required env / config values are missing, with a one-click `Open Settings` shortcut.
 
 5. **Tool loader** — Imports all shared `*.py` in `src/hub_cowork/tools/` and all skill-local `skills/*/tools/*.py` at startup.
 
@@ -430,7 +440,7 @@ hub-cowork/
 │   │   ├── desktop_host.py         # WS+HTTP servers, pywebview UI, tray wire-up, ExecutorPool + Redis wiring
 │   │   ├── console.py               # Terminal REPL — no UI, no background mode (hub-cowork-console script)
 │   │   ├── redis_bridge.py          # Redis inbox poller, classifier, per-user gate, outbox writer, presence
-│   │   ├── tray_icon.py             # Pure Win32 tray via ctypes (own message pump thread)
+│   │   ├── tray_icon.py             # Pure Win32 tray via ctypes (own message pump thread); supports red-dot badge + tooltip count for unread Teams messages
 │   │   └── ui_actions.py            # Shared WS/UI action handlers (sign-in, config save, restart)
 │   │
 │   ├── tools/                   # Shared tools (auto-discovered)
@@ -590,9 +600,9 @@ On startup the client authenticates, connects to Redis using the **same `REDIS_N
 
 All messages are JSON with a `type` field. The UI and backend share the same protocol.
 
-**Client → server:** `create_thread`, `send_to_thread`, `list_threads`, `get_thread`, `archive_thread`, `unarchive_thread`, `list_archived_threads`, `delete_thread`, `system_query`, `signin`, `clear_history`, `get_logs`, `get_config`, `save_config`, `restart`.
+**Client → server:** `create_thread`, `send_to_thread`, `cancel_thread`, `list_threads`, `get_thread`, `archive_thread`, `unarchive_thread`, `list_archived_threads`, `delete_thread`, `system_query`, `task`, `open_file`, `signin`, `clear_history`, `get_logs`, `get_config`, `save_config`, `validate_speakers`, `restart`.
 
-**Server → client:** `threads_list`, `thread_created`, `thread_updated`, `thread_detail`, `thread_started`, `thread_progress`, `thread_completed`, `thread_error`, `thread_archived`, `thread_unarchived`, `thread_deleted`, `log_entry`, `log_history`, `system_query_*`, `auth_status`, `signin_status`, `skills_list`, `service_status`, `config_data`, `config_saved`, `restart_ack`, `remote_message`.
+**Server → client:** `threads_list`, `archived_threads_list`, `thread_created`, `thread_updated`, `thread_detail`, `thread_started`, `thread_progress`, `thread_completed`, `thread_error`, `thread_archived`, `thread_unarchived`, `thread_deleted`, `thread_unread`, `cancel_ack`, `log_entry`, `log_history`, `history_cleared`, `system_query_started`, `system_query_progress`, `system_query_complete`, `system_query_error`, `auth_status`, `signin_status`, `skills_list`, `service_status`, `config_data`, `config_saved`, `config_warning`, `restart_ack`, `progress`, `remote_message`, `error`.
 
 Every invocation carries a `request_id` (`uuid.uuid4().hex[:8]`) used for correlation across WebSocket, UI, Redis outbox, and log entries.
 
@@ -696,79 +706,199 @@ Set in `.env` at the repo root, or in `src/hub_cowork/assets/.env.defaults` for 
 
 ## Authentication
 
-Hub Cowork uses **a single shared `InteractiveBrowserCredential`** (constructed in `core/agent_core.py`) for **every** outbound Azure call — Azure OpenAI, FoundryIQ (Azure AI Search), Fabric Data Agent, ACS email, WorkIQ helpers, and the Redis bridge. There is no `DefaultAzureCredential` chain and no `az` CLI subprocess (the agent runs under `pythonw.exe` where `az` would have nowhere to print device codes).
+Hub Cowork is a **multi-tenant** desktop agent: it talks to Azure OpenAI / ACS / WorkIQ in the user's **home tenant** (`AZURE_TENANT_ID`) and to FoundryIQ + Fabric Data Agent in a separate **resource tenant** (`RESOURCE_TENANT_ID`) where the user is a guest. To make this look and feel native — and silent on every restart — the auth stack is:
 
-### One credential, one auth record, one disk cache
+1. **WAM (Windows Account Manager) broker** via [`azure-identity-broker`](https://pypi.org/project/azure-identity-broker/) → the same native account picker Teams, Outlook, and Office show. **No browser opens.** Falls back transparently to `InteractiveBrowserCredential` on macOS/Linux or when `pymsalruntime` is missing.
+2. **Per-cache `AuthenticationRecord` persistence** to `~/.hub-cowork/auth_records/<cache_name>.json` so each tenant's cached refresh token can be silently re-bound to its account on the next process launch.
+3. **`TokenCachePersistenceOptions(name=cache_name)`** so MSAL backs every cache with a separate DPAPI-encrypted blob under Windows Credential Manager.
+4. **One factory** — `core/auth_credential.py::make_credential(...)` — builds *all* credentials with the same broker / record / cache wiring, so every call site is consistent.
+
+There is no `DefaultAzureCredential` chain and no `az` CLI subprocess (the agent runs under `pythonw.exe` where `az` would have nowhere to print device codes).
+
+### Why the previous design re-prompted
+
+An earlier iteration used a bare `InteractiveBrowserCredential(tenant_id=..., cache_persistence_options=...)` without an `AuthenticationRecord`. That meant:
+
+- The **home-tenant** credential worked silently because `agent_core` separately persisted *its* record to `auth_record.json` and passed it on next launch.
+- The **resource-tenant** credentials in `search_foundryiq.py` and `query_fabric_agent.py` had **no record** — so even though their refresh tokens were cached on disk, MSAL couldn't tell which account owned them, and every `get_token(...)` for `https://search.azure.com/.default` or `https://api.fabric.microsoft.com/.default` fell back to interactive sign-in.
+
+The fix below makes record persistence automatic for **every** credential, regardless of which tenant or which call site.
+
+### The credential factory
 
 ```python
-# src/hub_cowork/core/agent_core.py
-_cache_options = TokenCachePersistenceOptions(name="hub_cowork")          # persistent MSAL cache
-_AUTH_RECORD_PATH = APP_HOME / "auth_record.json"                          # ~/.hub-cowork/auth_record.json
+# src/hub_cowork/core/auth_credential.py
 
-_auth_record = AuthenticationRecord.deserialize(_AUTH_RECORD_PATH.read_text())  # if file exists
-_credential  = InteractiveBrowserCredential(
-    tenant_id=AZURE_TENANT_ID,
-    cache_persistence_options=_cache_options,
-    authentication_record=_auth_record,    # ← key: links the cache entries to a known user
-)
-set_credential(_credential)                # exposed via get_credential() to all consumers
+# Probed once at import time
+try:
+    from azure.identity.broker import InteractiveBrowserBrokerCredential
+    _BROKER_AVAILABLE = True
+except Exception:
+    _BROKER_AVAILABLE = False  # macOS, Linux, or Windows without pymsalruntime
+
+_AUTH_RECORD_DIR = APP_HOME / "auth_records"   # ~/.hub-cowork/auth_records/
+_parent_hwnd: int | None = None                # set lazily by the desktop host
+
+def set_parent_window_handle(hwnd: int) -> None:
+    """Called from desktop_host._set_taskbar_icon() once pywebview's HWND
+    is known. The WAM dialog will then appear parented to the app window."""
+    global _parent_hwnd
+    _parent_hwnd = int(hwnd)
+
+def make_credential(*, tenant_id, cache_name, authentication_record=None, redirect_uri=None):
+    cache_opts = TokenCachePersistenceOptions(name=cache_name)         # disk-backed token cache
+
+    # Auto-load saved record for this cache so subsequent runs are silent
+    if authentication_record is None:
+        authentication_record = _load_record(cache_name)
+    have_record = authentication_record is not None
+
+    if _BROKER_AVAILABLE:
+        inner = InteractiveBrowserBrokerCredential(
+            parent_window_handle=_resolve_hwnd(),     # native dialog parented to app
+            use_default_broker_account=True,          # pre-select Windows-signed-in account
+            tenant_id=tenant_id,
+            cache_persistence_options=cache_opts,
+            authentication_record=authentication_record,
+        )
+    else:
+        inner = InteractiveBrowserCredential(
+            tenant_id=tenant_id,
+            cache_persistence_options=cache_opts,
+            authentication_record=authentication_record,
+            redirect_uri=redirect_uri,                # only used by the browser fallback
+        )
+
+    return _RecordPersistingCredential(inner, cache_name, have_record)
 ```
 
-The two pieces work together:
+The four pieces, and what each one does:
 
-- **`TokenCachePersistenceOptions(name="hub_cowork")`** — tells MSAL to back the in-memory token cache with a disk file under Windows Credential Manager (DPAPI-encrypted on Windows; libsecret/Keychain on Linux/macOS). Caches both **access tokens** (typ. ~1 hr lifetime, scope-specific) and the **refresh token** (typ. ~90 days, rolling).
-- **`AuthenticationRecord`** — a small JSON blob (`home_account_id`, `username`, `tenant_id`, `authority`, `client_id`) that tells MSAL *which* identity owns the cached entries. **Without it, even a populated cache is unusable** — MSAL has no way to map a `get_token()` request to a stored refresh token, so it falls back to interactive login.
+| Piece | Purpose |
+|---|---|
+| **`InteractiveBrowserBrokerCredential`** | Routes auth through WAM. Shows the native Windows account picker (parented to our HWND) instead of a browser. Cross-tenant guest accounts work the same way as your home account. |
+| **`TokenCachePersistenceOptions(name=cache_name)`** | Tells MSAL to back the in-memory cache with a disk file under Windows Credential Manager (DPAPI-encrypted; libsecret/Keychain on Linux/macOS). One blob per `cache_name`. |
+| **`AuthenticationRecord`** | Small JSON blob (`home_account_id`, `username`, `tenant_id`, `authority`, `client_id`) that tells MSAL *which* identity owns the cached entries. **Without it, even a populated cache is unusable** — MSAL has no way to map a `get_token()` request to a stored refresh token, so it falls back to interactive login. |
+| **`_RecordPersistingCredential` wrapper** | Captures the `AuthenticationRecord` on the first successful `get_token(...)` and writes it to `~/.hub-cowork/auth_records/<cache_name>.json`. On every subsequent process start, `make_credential()` auto-loads it. |
 
-### Sign-in flow
+### The wrapper that closes the loop
+
+```python
+class _RecordPersistingCredential:
+    """Persists an AuthenticationRecord to disk on the first successful
+    get_token() call, so subsequent process runs reuse the signed-in account
+    silently instead of re-prompting."""
+
+    def __init__(self, inner, cache_name, already_have_record):
+        self._inner = inner
+        self._cache_name = cache_name
+        self._persisted = already_have_record
+
+    def get_token(self, *scopes, **kwargs):
+        token = self._inner.get_token(*scopes, **kwargs)
+        if not self._persisted:
+            rec = self._inner.authenticate(scopes=list(scopes))   # cache hit, no UI
+            _save_record(rec, self._cache_name)                   # → ~/.hub-cowork/auth_records/<cache_name>.json
+            self._persisted = True
+        return token
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+```
+
+After the wrapper persists the record once, every cold start passes that record into the broker, which then locates the matching refresh-token entry by `home_account_id` and mints access tokens silently.
+
+### The three call sites
+
+All three consumers go through the factory with **distinct cache names**, so each tenant gets its own cache blob and its own record file. Distinct cache names matter: a single shared blob can confuse MSAL when the same account is registered against different tenants (home + guest).
+
+| Call site | Tenant | `cache_name` | Saved record |
+|---|---|---|---|
+| `core/agent_core.py::_create_credential()` | `AZURE_TENANT_ID` (home) — Azure OpenAI, ACS, WorkIQ | `hub_cowork` | `~/.hub-cowork/auth_records/hub_cowork.json` |
+| `skills/rfp_evaluation/tools/search_foundryiq.py::_get_credential()` | `RESOURCE_TENANT_ID` (guest) — Azure AI Search | `rfp_agent_foundryiq` | `~/.hub-cowork/auth_records/rfp_agent_foundryiq.json` |
+| `skills/rfp_evaluation/tools/query_fabric_agent.py::_get_credential()` | `RESOURCE_TENANT_ID` (guest) — Fabric Data Agent | `rfp_agent_foundryiq` *(reused — same tenant)* | shares the FoundryIQ record |
+
+The Redis bridge (`host/redis_bridge.py`) wraps the home-tenant credential in `redis-entraid`'s `EntraIdCredentialsProvider`, which handles its own connection-level reauth.
+
+### Wiring the parent HWND
+
+WAM dialogs need a parent window handle so they appear modal to *our* app rather than floating out in the OS. pywebview's HWND isn't known until after the window is created, so we register it lazily:
+
+```python
+# src/hub_cowork/host/desktop_host.py::_set_taskbar_icon()
+hwnd = ctypes.windll.user32.FindWindowW(None, WINDOW_TITLE)
+logger.info("Taskbar icon set via Win32 (hwnd=%s)", hwnd)
+try:
+    from hub_cowork.core.auth_credential import set_parent_window_handle
+    set_parent_window_handle(int(hwnd))
+except Exception:
+    pass
+```
+
+Until that fires, `_resolve_hwnd()` falls back to `user32.GetForegroundWindow()` so even the very first cold-start broker call (the home-tenant probe in `service_status`) appears on top of *something* sensible.
+
+### Sign-in flow (current)
 
 ```
-First launch
-└─ no auth_record.json yet
-   └─ check_azure_auth() returns (False, "Not signed in")
-   └─ UI shows the "Sign in to Azure" button
-   └─ user clicks → run_az_login()
-      ├─ _credential.authenticate(scopes=["…cognitiveservices…/.default"])
-      │     └─ opens system browser, completes Entra ID OAuth
-      ├─ saves AuthenticationRecord to ~/.hub-cowork/auth_record.json
-      └─ rebuilds _credential with the saved record (so the running session starts using silent refresh immediately)
+First launch on a fresh machine
+└─ no auth_records/*.json exist
+   └─ home-tenant probe → broker shows native account picker (parented to app once HWND is registered)
+      ├─ user picks the Windows-signed-in account → silent token (use_default_broker_account=True often skips the picker entirely)
+      └─ wrapper.get_token() succeeds
+         └─ wrapper.authenticate() captures the AuthenticationRecord
+            └─ written to ~/.hub-cowork/auth_records/hub_cowork.json
+   └─ FoundryIQ probe (resource tenant) → same flow
+      └─ written to ~/.hub-cowork/auth_records/rfp_agent_foundryiq.json
+   └─ Fabric probe → record file already exists from FoundryIQ → silent
 
 Subsequent launches
-└─ auth_record.json found
-   └─ deserialize, build credential with record
-   └─ check_azure_auth() calls _credential.get_token(...) silently
-      └─ MSAL: cache hit on access token (within lifetime) → return immediately
-                cache miss → use refresh token to mint new access token (silent)
-                refresh token expired/revoked → raise → UI shows "Sign in" again
+└─ make_credential() auto-loads each record
+   └─ broker silently mints access tokens from cached refresh tokens
+      └─ no dialog, no browser, nothing
 ```
+
+You can confirm this in the log:
+
+```
+[Auth] Auth: parent window handle registered (hwnd=4394490)
+[Auth] Auth: loaded saved record for cache=hub_cowork (account=user@contoso.com)
+[Auth] Auth: loaded saved record for cache=rfp_agent_foundryiq (account=user@contoso.com)
+[FoundryIQ] Using WAM broker credential for tenant 3002da77-...
+InteractiveBrowserBrokerCredential.get_token succeeded
+```
+
+The `Using WAM broker credential` line is logged in the RFP tools right before each credential is built — if you ever see `Using InteractiveBrowser credential` instead, the broker package isn't available (e.g. PyInstaller bundle missing `pymsalruntime` data files; see `hub_cowork.spec`).
 
 ### Token refresh paths
 
-There are four token consumers, all sharing the one credential:
+Four consumers, all backed by the factory:
 
 | Consumer | Where it lives | Refresh logic |
 |---|---|---|
-| **Azure OpenAI** (Responses API) | `agent_core.get_responses_client()` | Caches OpenAI client + `expires_on`; on every call checks `now < expires_on - 300` (5-min skew buffer). On expiry, calls `_credential.get_token(...)` again — MSAL silently mints a new access token from the cached refresh token. If silent refresh raises, falls back to `run_az_login()` (interactive, last resort). The refresh path is guarded by `_responses_client_lock` so concurrent thread executors don't race. |
-| **FoundryIQ search** | `skills/rfp_evaluation/tools/search_foundryiq.py::_get_credential` | Reuses the shared credential via `agent_core.get_credential()`. Per-tool token cache (`_cached_token`) refreshes when `expires_on < now + 60`. Because the shared credential has the AuthRecord, `get_token("https://search.azure.com/.default")` is silent — no second browser prompt for the new resource scope. |
-| **Fabric Data Agent** | `skills/rfp_evaluation/tools/query_fabric_agent.py::_get_credential` | Same pattern as FoundryIQ. Refreshes when `expires_on - now < _TOKEN_REFRESH_BUFFER_SECONDS` (60s). Silent for `https://api.fabric.microsoft.com/.default`. |
-| **Redis bridge** (Azure Managed Redis) | `host/redis_bridge.py` | Wraps the shared credential in `redis-entraid`'s `EntraIdCredentialsProvider`, which handles connection-level reauth and access-token rotation transparently. |
+| **Azure OpenAI** (Responses API) | `agent_core.get_responses_client()` | Caches OpenAI client + `expires_on`; refreshes when `now > expires_on - 300` (5-min skew). Calls `_credential.get_token(...)` — broker silently mints a new AT from the cached refresh token. Falls back to `run_az_login()` (interactive WAM) only if silent refresh raises. Guarded by `_responses_client_lock`. |
+| **FoundryIQ search** | `skills/rfp_evaluation/tools/search_foundryiq.py::_get_credential` | Per-tool token cache refreshes when `expires_on < now + 60`. Silent for `https://search.azure.com/.default` because the saved record points the broker at the right account in the resource tenant. |
+| **Fabric Data Agent** | `skills/rfp_evaluation/tools/query_fabric_agent.py::_get_credential` | Same pattern. Reuses the FoundryIQ credential when both tools run in the same skill (`[FabricAgent] Reusing credential from search_foundryiq`). |
+| **Redis bridge** | `host/redis_bridge.py` | `EntraIdCredentialsProvider` from `redis-entraid` wraps the home-tenant credential and rotates Redis access tokens on the connection automatically. |
 
 ### Why "no popup until 90+ days idle"
 
 - **Access tokens** (~1 hr) are refreshed silently from the **refresh token** in the persistent cache. The user never sees this.
-- **Refresh tokens** (~90 days) are themselves rolled forward on every successful use. So as long as you use the app at least once every ~90 days, your refresh token never expires.
+- **Refresh tokens** (~90 days) are themselves rolled forward on every successful use. As long as you use the app at least once every ~90 days, your refresh token never expires.
 - **Multiple resource scopes** (Cognitive Services, Azure Search, Fabric, ARM, etc.) are all minted from the same refresh token via MSAL's `acquire_token_silent` — first request to a new scope triggers a silent token call, not an interactive prompt.
+- **Cross-tenant guest access** uses a *separate* refresh token in a *separate* cache blob, but the mechanics are identical — and because the broker uses the same Windows-signed-in account by default (`use_default_broker_account=True`), the very first sign-in to the guest tenant typically also requires zero clicks.
 
 ### Where the bytes actually live
 
-There are two on-disk artefacts. They are deliberately separate.
+There are two on-disk artefact families. They are deliberately separate.
 
-**1. `~/.hub-cowork/auth_record.json`** (written by Hub Cowork, plain JSON, ~1 KB, no secrets)
+**1. `~/.hub-cowork/auth_records/<cache_name>.json`** (written by Hub Cowork's wrapper, plain JSON, ~1 KB each, no secrets)
 
-Created in `run_az_login()` after a successful interactive sign-in:
+One file per `cache_name` — currently `hub_cowork.json` (home tenant) and `rfp_agent_foundryiq.json` (resource tenant). Created automatically on the first successful `get_token(...)` for each credential:
 
 ```python
-record = _credential.authenticate(scopes=["https://cognitiveservices.azure.com/.default"])
-_AUTH_RECORD_PATH.write_text(record.serialize())   # JSON dump of AuthenticationRecord
+# core/auth_credential.py::_RecordPersistingCredential.get_token
+rec = self._inner.authenticate(scopes=list(scopes))   # silent — uses the AT we just acquired
+_save_record(rec, self._cache_name)                   # → ~/.hub-cowork/auth_records/<cache_name>.json
 ```
 
 Contents are:
@@ -784,17 +914,17 @@ Contents are:
 }
 ```
 
-This is **not** a token. It is a pointer that says *"the refresh token belonging to this user is somewhere in the MSAL cache — go find it."* On next process start, the deserialised record is passed to `InteractiveBrowserCredential(authentication_record=...)`, which lets MSAL look up the matching refresh-token entry by `home_account_id`.
+This is **not** a token. It is a pointer that says *"the refresh token belonging to this user is somewhere in the MSAL cache — go find it."* On next process start, `make_credential()` deserialises the record and passes it to the broker, which then locates the matching refresh-token entry by `home_account_id`.
 
-**2. The MSAL persistent token cache** (written by `azure-identity[persistent-cache]` via the `msal_extensions` library, encrypted by the OS keystore)
+**2. The MSAL persistent token cache** (written by `azure-identity[persistent-cache]` via `msal_extensions`, encrypted by the OS keystore)
 
 | Platform | Backend | Where |
 |---|---|---|
-| **Windows** | DPAPI-encrypted file | `%LOCALAPPDATA%\.IdentityService\hub_cowork.cache` (the file name comes from `TokenCachePersistenceOptions(name="hub_cowork")`) |
-| **macOS** | Keychain | Service `hub_cowork` |
-| **Linux** | libsecret (gnome-keyring/KWallet) | Service `hub_cowork`. Falls back to plaintext if libsecret is missing and `allow_unencrypted_storage=True` is set (Hub Cowork doesn't set this — on Linux without libsecret, the cache becomes in-memory only). |
+| **Windows** | DPAPI-encrypted file | `%LOCALAPPDATA%\.IdentityService\<cache_name>.cache` (one per `TokenCachePersistenceOptions(name=...)`) |
+| **macOS** | Keychain | Service `<cache_name>` |
+| **Linux** | libsecret (gnome-keyring/KWallet) | Service `<cache_name>`. Falls back to in-memory only if libsecret is missing (we don't set `allow_unencrypted_storage`). |
 
-The cache is a JSON document encrypted at rest, containing three categories of entries (MSAL terminology):
+So on Windows you'll see two cache blobs once both tenants are signed in: `hub_cowork.cache` and `rfp_agent_foundryiq.cache`. Each contains:
 
 | Entry | What it is | Lifetime |
 |---|---|---|
@@ -802,16 +932,20 @@ The cache is a JSON document encrypted at rest, containing three categories of e
 | `RefreshToken` | One per `home_account_id`. Used to mint new access tokens for any scope. | Sliding ~90 days; rolled forward on every use |
 | `Account` / `IdToken` | Identity metadata, last-known username, etc. | Indefinite |
 
-There are **no client secrets** — `InteractiveBrowserCredential` is a public-client flow (PKCE), so the refresh token is the only long-lived secret on the box, and it sits behind the OS keystore.
+There are **no client secrets** — both `InteractiveBrowserBrokerCredential` and `InteractiveBrowserCredential` are public-client flows (PKCE), so the refresh token is the only long-lived secret on the box, and it sits behind the OS keystore.
 
 ### How a `get_token(...)` call actually flows
 
 ```
-caller: _credential.get_token("https://search.azure.com/.default")
+caller: foundry_credential.get_token("https://search.azure.com/.default")
           │
           ▼
-azure-identity._SilentAuthenticationCredential
-  ├─ open MSAL persistent cache (DPAPI-decrypt the file)
+_RecordPersistingCredential   (Hub Cowork wrapper)
+  └─ delegates to inner.get_token(...)
+          │
+          ▼
+InteractiveBrowserBrokerCredential   (azure-identity-broker)
+  ├─ open MSAL persistent cache (DPAPI-decrypt rfp_agent_foundryiq.cache)
   ├─ look up account by home_account_id (from AuthenticationRecord)
   ├─ MSAL.acquire_token_silent(scopes=["https://search.azure.com/.default"], account=…)
   │     │
@@ -819,7 +953,7 @@ azure-identity._SilentAuthenticationCredential
   │     │     → return cached bearer (no network call)
   │     │
   │     ├─ AccessToken miss / expired, RefreshToken present?
-  │     │     → POST https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token
+  │     │     → POST https://login.microsoftonline.com/{resource_tenant}/oauth2/v2.0/token
   │     │         grant_type=refresh_token
   │     │         refresh_token=<from cache>
   │     │         scope=https://search.azure.com/.default
@@ -828,17 +962,18 @@ azure-identity._SilentAuthenticationCredential
   │     │     → return new bearer
   │     │
   │     └─ RefreshToken missing / Entra rejects it?
-  │           → raise ClientAuthenticationError
+  │           → broker invokes WAM → native account picker (parented to our HWND)
+  │             → user picks the Windows-signed-in account → broker mints fresh tokens
+  │             → if user cancels → ClientAuthenticationError
   │
   ▼
-caller's exception handler (e.g. get_responses_client) decides whether to fall
-back to interactive sign-in.
+wrapper persists the AuthenticationRecord on first success, then returns the token.
 ```
 
 Two consequences worth knowing:
 
 - **Refresh-token rotation is automatic.** Every silent refresh writes a *new* refresh token to the cache and invalidates the old one server-side. This is why an idle laptop that hasn't talked to Entra in 6 months will need re-login, but a daily-used one effectively never does.
-- **Per-scope access tokens are independent cache entries.** First `get_token` for a new resource (say, Fabric on a session that's only used Azure OpenAI so far) will silently round-trip to Entra to mint a Fabric-scoped access token from the existing refresh token, then cache it for ~1 hour. No browser, no user prompt — but a network call.
+- **Per-scope access tokens are independent cache entries.** First `get_token` for a new resource silently round-trips to Entra to mint a new access token from the existing refresh token, then caches it for ~1 hour. No browser, no user prompt — but a network call.
 
 ### How Hub Cowork's caches interact with refresh
 
@@ -847,27 +982,92 @@ Two consequences worth knowing:
 | **OpenAI client** (`agent_core._responses_client`) | Process memory | The `OpenAI` SDK instance and its bearer string | Rebuilt when `time.time() > _responses_client_token_expires - 300` |
 | **FoundryIQ token** (`search_foundryiq._cached_token`) | Process memory | `AccessToken` namedtuple | Refreshed when `expires_on < now + 60` |
 | **Fabric token** (`query_fabric_agent._cached_token`) | Process memory | `AccessToken` namedtuple | Refreshed when `expires_on - now < 60` |
-| **MSAL persistent cache** | OS keystore (DPAPI/Keychain/libsecret) | `AccessToken` + `RefreshToken` per scope | Updated by every `_credential.get_token(...)` call that hits the network |
+| **MSAL persistent caches** (one per `cache_name`) | OS keystore (DPAPI/Keychain/libsecret) | `AccessToken` + `RefreshToken` per scope | Updated by every `inner.get_token(...)` call that hits the network |
 
-The in-process caches are pure performance optimisations — they avoid touching the disk-backed MSAL cache (which involves DPAPI decrypt + JSON parse) on every API call. When they expire, they delegate to `_credential.get_token(...)`, which is where the real refresh logic (cached AT → refresh-token grant → interactive fallback) lives.
+The in-process caches are pure performance optimisations — they avoid touching the disk-backed MSAL cache (DPAPI decrypt + JSON parse) on every API call. When they expire, they delegate to the credential, which is where the real refresh logic (cached AT → refresh-token grant → broker fallback) lives.
 
-### When a browser prompt **does** appear
+### Two independent refresh-token paths (one per tenant)
+
+The home tenant and the resource tenant each have a fully isolated MSAL cache + refresh-token lifecycle. Nothing is shared between them — refreshing one never touches the other, and a failure in one cannot cascade.
+
+```
+┌─────────────────────── Home tenant (AZURE_TENANT_ID) ──────────────────────┐
+│                                                                            │
+│  agent_core._create_credential()                                           │
+│      └─ make_credential(cache_name="hub_cowork", tenant_id=HOME)           │
+│                │                                                           │
+│                ├─ AuthenticationRecord:  ~/.hub-cowork/auth_records/       │
+│                │                          hub_cowork.json                  │
+│                │                                                           │
+│                └─ MSAL cache blob:       %LOCALAPPDATA%/.IdentityService/  │
+│                                          hub_cowork.cache                  │
+│                                          (DPAPI-encrypted, holds the       │
+│                                           HOME refresh token + per-scope   │
+│                                           access tokens)                   │
+│                                                                            │
+│  Consumers: Azure OpenAI · ACS · WorkIQ · Redis bridge                     │
+│  Refresh:   silent on every get_token; rolls forward the HOME refresh      │
+│             token; WAM dialog only if HOME refresh token is rejected.      │
+└────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────── Resource tenant (RESOURCE_TENANT_ID) ──────────────────────┐
+│                                                                            │
+│  search_foundryiq._get_credential()                                        │
+│  query_fabric_agent._get_credential()                                      │
+│      └─ make_credential(cache_name="rfp_agent_foundryiq",                  │
+│                         tenant_id=RESOURCE)                                │
+│                │                                                           │
+│                ├─ AuthenticationRecord:  ~/.hub-cowork/auth_records/       │
+│                │                          rfp_agent_foundryiq.json         │
+│                │                                                           │
+│                └─ MSAL cache blob:       %LOCALAPPDATA%/.IdentityService/  │
+│                                          rfp_agent_foundryiq.cache         │
+│                                          (DPAPI-encrypted, holds the       │
+│                                           RESOURCE refresh token + per-    │
+│                                           scope access tokens)             │
+│                                                                            │
+│  Consumers: Azure AI Search (FoundryIQ) · Fabric Data Agent                │
+│  Refresh:   silent on every get_token; rolls forward the RESOURCE          │
+│             refresh token; WAM dialog only if RESOURCE refresh token is    │
+│             rejected. Failure here does NOT affect Azure OpenAI / ACS.     │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+What this isolation buys us:
+
+| Property | Home tenant | Resource tenant |
+|---|---|---|
+| **Refresh-token storage** | `hub_cowork.cache` (DPAPI) | `rfp_agent_foundryiq.cache` (DPAPI) |
+| **Account record** | `auth_records/hub_cowork.json` | `auth_records/rfp_agent_foundryiq.json` |
+| **Token endpoint** | `https://login.microsoftonline.com/{HOME_TENANT_ID}/oauth2/v2.0/token` | `https://login.microsoftonline.com/{RESOURCE_TENANT_ID}/oauth2/v2.0/token` |
+| **90-day idle clock** | Resets on every Azure OpenAI / ACS / WorkIQ call | Resets on every FoundryIQ / Fabric call |
+| **CA policy enforcement** | Honours HOME tenant CA policies (e.g. MFA frequency) | Honours RESOURCE tenant CA policies independently |
+| **Account switching** | Delete `auth_records/hub_cowork.json` to re-prompt | Delete `auth_records/rfp_agent_foundryiq.json` to re-prompt |
+| **First-launch sign-in** | One WAM dialog (often zero clicks via `use_default_broker_account=True`) | Separate WAM dialog if the Windows-signed-in account isn't a guest in the resource tenant; zero clicks if it is |
+
+Because both consumers within the resource tenant (FoundryIQ search and Fabric Data Agent) use the same `cache_name`, they **share** the resource-tenant refresh token — so a fresh `get_token` for a Fabric scope after FoundryIQ has already authenticated is silent (it just mints a new access token from the shared refresh token in `rfp_agent_foundryiq.cache`).
+
+### When a sign-in dialog **does** appear
 
 | Trigger | What to expect |
 |---|---|
-| First-ever launch on a machine | One sign-in. Auth record is saved. |
-| `~/.hub-cowork/auth_record.json` deleted or corrupted | UI shows "Sign in" again. |
-| Refresh token expired (>90 days idle, password change, revocation, conditional-access policy update) | Next `get_token()` raises; OpenAI client falls back to `run_az_login()`; you'll see a popup. |
-| Wrong tenant in `.env` | All silent refreshes fail — re-sign-in succeeds against the new tenant. |
+| First-ever launch on a machine | WAM dialog (native account picker) — typically one click since the Windows-signed-in account is pre-selected. The home tenant and resource tenant each prompt once if no Windows account satisfies both. |
+| `~/.hub-cowork/auth_records/<cache_name>.json` deleted or corrupted | Next `get_token()` for that cache re-prompts (silent if MSAL cache still has a valid refresh token; broker dialog otherwise). |
+| Refresh token expired (>90 days idle, password change, revocation, conditional-access policy update) | Next `get_token()` triggers WAM dialog. |
+| Wrong tenant in `.env` | All silent refreshes fail — re-sign-in succeeds against the new tenant and a new record is saved on the next successful call. |
+| Broker package missing (e.g. macOS, Linux, broken PyInstaller bundle) | Falls back to `InteractiveBrowserCredential` — opens the system browser instead of WAM. Look for `WAM broker credential unavailable` at startup. |
 
-If you see frequent popups, check the agent log for `Token refresh failed — attempting interactive login...` (emitted by `get_responses_client`). The exception message that follows pinpoints the MSAL failure (e.g. `AADSTS50173: refresh token used too late`, `AADSTS65001: consent revoked`, etc.).
+If you see frequent popups, check the agent log for `Token refresh failed — attempting interactive login...`. The MSAL exception message that follows pinpoints the failure (e.g. `AADSTS50173: refresh token used too late`, `AADSTS65001: consent revoked`).
 
 ### Operational notes
 
-- `check_azure_auth()` is **non-interactive by design** — it never opens a browser, so you can poll it from the UI thread without surprising the user.
-- The auth record is small (~1 KB) and contains no secrets — only the user's home-account ID and tenant. The actual tokens live in the OS-level secure store managed by MSAL.
-- To force a re-sign-in (e.g. switching accounts), delete `~/.hub-cowork/auth_record.json` and restart. The MSAL cache for the prior account remains in Credential Manager but is harmless without the record.
-- `TokenCachePersistenceOptions(name="hub_cowork")` doubles as the Credential Manager target prefix. Forks of this app should change the `name` to avoid sharing the cache blob.
+- `check_azure_auth()` is **non-interactive by design** — it never opens a browser or WAM dialog, so you can poll it from the UI thread without surprising the user.
+- Auth records are small (~1 KB), one per `cache_name`, and contain no secrets — only the user's home-account ID and tenant. The actual tokens live in the OS-level secure store managed by MSAL.
+- To force a re-sign-in (e.g. switching accounts), delete `~/.hub-cowork/auth_records/` and restart. The MSAL caches for the prior account remain in Credential Manager but are harmless without the records.
+- To switch only the resource-tenant identity, delete just `~/.hub-cowork/auth_records/rfp_agent_foundryiq.json`.
+- `TokenCachePersistenceOptions(name=...)` doubles as the Credential Manager target prefix. Forks of this app should change the name (in `make_credential` call sites and `agent_core`) to avoid sharing the cache blob with upstream.
+- **Packaging note (PyInstaller):** WAM relies on `pymsalruntime`'s native DLLs. `hub_cowork.spec` already collects them via `copy_metadata("azure-identity-broker")`, `collect_data_files("pymsalruntime")`, and explicit `hiddenimports = [..., "azure.identity.broker", "pymsalruntime"]`. If you ever rebundle and see `WAM broker credential unavailable (ImportError) — falling back to InteractiveBrowserCredential` in the packaged EXE's log, those three spec entries are the place to check.
+
 
 ---
 
@@ -877,6 +1077,7 @@ If you see frequent popups, check the agent log for `Token refresh failed — at
 |---|---|
 | `openai` | Azure OpenAI Responses API client |
 | `azure-identity[persistent-cache]` | Persistent token cache |
+| `azure-identity-broker` (Windows only) | WAM broker credential — native account picker, no browser popup |
 | `azure-communication-email` | ACS email (calendar invites) |
 | `python-dotenv` | `.env` loading |
 | `pywebview` | Desktop window for the chat UI |
