@@ -74,6 +74,26 @@
       <span class="tag" id="chatTag">#system</span>
       <span class="title" id="chatTitle">System</span>
       <span class="status-label" id="chatStatus">ready</span>
+      <button id="chatHeaderArchiveBtn" class="icon-only secondary chat-header-btn"
+              onclick="archiveSelectedThread()" style="display:none"
+              title="Archive task" aria-label="Archive task">
+        <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+      </button>
+      <button id="chatHeaderUnarchiveBtn" class="icon-only secondary chat-header-btn"
+              onclick="unarchiveSelectedThread()" style="display:none"
+              title="Restore from archive" aria-label="Restore from archive">
+        <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 4 3 10 9 10"/></svg>
+      </button>
+      <button id="chatHeaderClearBtn" class="icon-only secondary chat-header-btn"
+              onclick="clearSystemConversation()" style="display:none"
+              title="Clear conversation" aria-label="Clear conversation">
+        <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+      </button>
+      <button class="icon-only secondary chat-header-btn"
+              onclick="openLogsTab()"
+              title="Show logs" aria-label="Show logs">
+        <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+      </button>
     </div>
     <div class="chat-body" id="chatBody">
       <div class="empty">
@@ -101,24 +121,12 @@
 
   <section class="details">
     <div class="tabs">
-      <button class="active" data-tab="info" onclick="switchTab('info')">
-        <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-        Info
-      </button>
-      <button data-tab="progress" onclick="switchTab('progress')">
-        <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-        Progress
-      </button>
-      <button data-tab="logs" onclick="switchTab('logs')">
+      <button class="active" data-tab="logs" onclick="switchTab('logs')">
         <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
         Logs
       </button>
     </div>
-    <div class="panel" id="panel-info">
-      <div class="empty">No task selected.</div>
-    </div>
-    <div class="panel hidden" id="panel-progress"></div>
-    <div class="panel hidden log-pane" id="panel-logs"></div>
+    <div class="panel log-pane" id="panel-logs"></div>
   </section>
 </div>
 

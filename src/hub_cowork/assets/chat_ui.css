@@ -28,6 +28,12 @@
     grid-template-rows: 40px 1fr;
     height: 100vh;
   }
+  /* Right pane collapsed: hide it entirely and reclaim the column for the
+     main chat. The tab-strip lives inside the right pane, so when the user
+     wants to peek at logs/info they click the header buttons in the chat
+     pane (`openLogsTab`, etc) which expand the pane back. */
+  .app.details-collapsed { grid-template-columns: 280px 1fr 0; }
+  .app.details-collapsed section.details { display: none; }
   header.topbar {
     grid-column: 1 / -1;
     display: flex; align-items: center; padding: 0 14px;
@@ -1377,7 +1383,7 @@
      default and revealed by the breakpoint media queries below.
      ============================================================ */
 
-  /* Hidden by default � wide layout shows both side panes inline. */
+  /* Hidden by default � wide layout shows both side panes inline. */
   .nav-toggle { display: none; }
   header button.icon-only {
     padding: 6px 8px;
@@ -1447,7 +1453,72 @@
     .msg.user, .msg.assistant, .msg.progress { max-width: 96%; }
   }
 
-  /* Respect reduced motion � disable slide animations. */
+  /* Respect reduced motion � disable slide animations. */
   @media (prefers-reduced-motion: reduce) {
     aside.threads, section.details { transition: none; }
+  }
+
+  /* ─── In-chat step cards ─────────────────────────────────────
+     Persistent cards rendered inline in the main chat for each
+     "progress" / "milestone" event from the agent. They replace
+     the right-pane Progress timeline as the primary surface. */
+  .step-card {
+    align-self: flex-start;
+    max-width: 92%;
+    background: var(--pane);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 6px;
+    padding: 8px 12px;
+    box-shadow: 0 1px 1px rgba(0,0,0,0.04);
+  }
+  .step-card.kind-milestone { border-left-color: var(--awaiting); background: #fffbea; }
+  .step-card.kind-error     { border-left-color: var(--failed);   background: #fff5f5; }
+  .step-card-head {
+    display: flex; align-items: center; gap: 8px;
+    font-weight: 600; font-size: 13px;
+  }
+  .step-card-icon {
+    width: 16px; height: 16px; flex: none;
+    color: var(--accent);
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .step-card-icon svg { width: 100%; height: 100%; }
+  .step-card.kind-milestone .step-card-icon { color: var(--awaiting); }
+  .step-card.kind-error .step-card-icon     { color: var(--failed); }
+  .step-card-title { flex: 1; }
+  .step-card-body { margin-top: 6px; font-size: 12.5px; }
+  .step-card-body.md { white-space: normal; }
+
+  /* ─── Delete button on thread-item hover ─────────────────────
+     Tiny trash icon revealed when the user hovers over a thread
+     row. stopPropagation in the click handler keeps clicks from
+     selecting the thread. */
+  .thread-item { position: relative; }
+  .thread-item .thread-item-del {
+    margin-left: auto;
+    background: transparent; border: 0; padding: 2px 4px;
+    color: var(--muted); cursor: pointer; border-radius: 3px;
+    display: none; align-items: center; justify-content: center;
+    flex: none;
+  }
+  .thread-item:hover .thread-item-del { display: inline-flex; }
+  .thread-item .thread-item-del:hover { color: var(--failed); background: rgba(0,0,0,0.05); }
+
+  /* ─── Chat-header utility buttons (Info / Logs toggles) ─── */
+  .chat-header-btn {
+    padding: 4px 6px;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--muted);
+  }
+  .chat-header-btn:hover { background: rgba(0,0,0,0.05); color: var(--text); }
+
+  /* Dark-mode tweaks for the new surfaces. */
+  @media (prefers-color-scheme: dark) {
+    .step-card { background: var(--pane); }
+    .step-card.kind-milestone { background: rgba(220, 180, 0, 0.08); }
+    .step-card.kind-error     { background: rgba(220, 60, 60, 0.08); }
+    .thread-item .thread-item-del:hover { background: rgba(255,255,255,0.06); }
+    .chat-header-btn:hover { background: rgba(255,255,255,0.06); }
   }

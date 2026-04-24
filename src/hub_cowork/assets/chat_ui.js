@@ -12,7 +12,8 @@ const state = {
   logs: [],                    // all received log entries
   showArchived: false,
   authOk: false,
-  activeTab: "info",           // currently visible right-pane tab
+  activeTab: "logs",           // currently visible right-pane tab (only Logs remains)
+  detailsCollapsed: true,      // right pane starts collapsed on desktop
   systemMessages: [],          // ephemeral Q&A on the System pseudo-thread
 };
 
@@ -249,6 +250,15 @@ function threadItemEl(t, isSystem) {
     time.title = new Date(t.created_at * 1000).toLocaleString();
     row1.appendChild(time);
   }
+  if (!isSystem) {
+    const del = document.createElement("button");
+    del.className = "thread-item-del";
+    del.title = "Delete task";
+    del.setAttribute("aria-label", "Delete task");
+    del.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>';
+    del.onclick = (ev) => { ev.stopPropagation(); deleteThread(t.id); };
+    row1.appendChild(del);
+  }
   d.appendChild(row1);
 
   const meta = document.createElement("div");
@@ -301,20 +311,14 @@ function selectThread(id) {
 }
 
 function clearDetailPanels() {
-  document.getElementById("panel-info").innerHTML = "";
-  document.getElementById("panel-progress").innerHTML = "";
-  document.getElementById("panel-logs").innerHTML = "";
+  const logs = document.getElementById("panel-logs");
+  if (logs) logs.innerHTML = "";
 }
 
 function renderActiveTab() {
-  const name = state.activeTab || "info";
-  if (name === "info" || name === "progress") {
-    // renderDetails fills both Info and Progress panels — cheap enough to
-    // render together since metadata is small.
-    renderDetails();
-  } else if (name === "logs") {
-    renderLogs();
-  }
+  // Only the Logs tab survives — everything else is rendered inline in the
+  // main chat (step cards) or via thread-list / chat-header controls.
+  renderLogs();
 }
 
 function renderSelectedHeader() {
@@ -322,13 +326,20 @@ function renderSelectedHeader() {
   const title = document.getElementById("chatTitle");
   const status = document.getElementById("chatStatus");
   const crumb = document.getElementById("breadcrumb");
+  const archBtn = document.getElementById("chatHeaderArchiveBtn");
+  const unarchBtn = document.getElementById("chatHeaderUnarchiveBtn");
+  const clearBtn = document.getElementById("chatHeaderClearBtn");
   const setCrumb = (txt) => { if (crumb) crumb.textContent = txt || ""; };
+  const showHdrBtn = (el, on) => { if (el) el.style.display = on ? "" : "none"; };
   if (state.selectedId === SYSTEM_THREAD_ID) {
     tag.textContent = "#system";
     title.textContent = "System · cross-task queries";
     status.textContent = "ready";
     status.className = "status-label";
     setCrumb("System");
+    showHdrBtn(archBtn, false);
+    showHdrBtn(unarchBtn, false);
+    showHdrBtn(clearBtn, state.systemMessages.length > 0);
     updateComposerLockState();
     return;
   }
@@ -338,17 +349,41 @@ function renderSelectedHeader() {
     status.textContent = "draft";
     status.className = "status-label";
     setCrumb("New task");
+    showHdrBtn(archBtn, false);
+    showHdrBtn(unarchBtn, false);
+    showHdrBtn(clearBtn, false);
     updateComposerLockState();
     return;
   }
   const t = state.threads.get(state.selectedId) || state.archivedThreads.get(state.selectedId);
-  if (!t) { tag.textContent = ""; title.textContent = "(not found)"; setCrumb(""); updateComposerLockState(); return; }
+  if (!t) {
+    tag.textContent = ""; title.textContent = "(not found)"; setCrumb("");
+    showHdrBtn(archBtn, false); showHdrBtn(unarchBtn, false); showHdrBtn(clearBtn, false);
+    updateComposerLockState();
+    return;
+  }
   tag.textContent = t.correlation_tag || ("#thread-" + t.id);
   title.textContent = t.title || "(untitled)";
   status.textContent = t.status || "unknown";
   status.className = "status-label " + (t.status || "");
   setCrumb(t.title || "(untitled)");
+  const isArchived = t.status === "archived" || state.archivedThreads.has(t.id);
+  showHdrBtn(archBtn, !isArchived);
+  showHdrBtn(unarchBtn, isArchived);
+  showHdrBtn(clearBtn, false);
   updateComposerLockState();
+}
+
+// Archive / unarchive the currently selected thread (chat-header buttons).
+function archiveSelectedThread() {
+  const id = state.selectedId;
+  if (!id || id === SYSTEM_THREAD_ID || id === DRAFT_THREAD_ID) return;
+  archiveThread(id);
+}
+function unarchiveSelectedThread() {
+  const id = state.selectedId;
+  if (!id || id === SYSTEM_THREAD_ID || id === DRAFT_THREAD_ID) return;
+  unarchiveThread(id);
 }
 
 // Show a small informational notice when the selected thread is in a
@@ -418,8 +453,39 @@ function renderChatBody() {
   }
   const d = state.threadDetail.get(state.selectedId);
   if (!d) { body.innerHTML = '<div class="empty">Loading…</div>'; return; }
-  for (const msg of d.messages || []) {
-    appendMsg(msg.role, msg.content);
+  // Interleave user/assistant messages with persisted progress cards so
+  // the historical view matches what was shown live. Messages don't carry
+  // their own timestamps in the cached payload, so we render them in
+  // order, with all card-worthy progress entries that arrived BEFORE the
+  // final assistant message inserted in chronological order before that
+  // message. In practice: user → step cards → assistant.
+  const msgs = d.messages || [];
+  const cards = (d.progress_log || []).filter(p => {
+    const k = Array.isArray(p) ? p[1] : p.kind;
+    return PROGRESS_CARD_KINDS.has(k);
+  });
+  // Find the last user message — cards belong to the turn after it.
+  let lastUserIdx = -1;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === "user") { lastUserIdx = i; break; }
+  }
+  for (let i = 0; i < msgs.length; i++) {
+    appendMsg(msgs[i].role, msgs[i].content);
+    if (i === lastUserIdx) {
+      for (const p of cards) {
+        const kind = Array.isArray(p) ? p[1] : p.kind;
+        const message = Array.isArray(p) ? p[2] : p.message;
+        body.appendChild(buildProgressCard(kind, message));
+      }
+    }
+  }
+  // If no user message yet (rare), still render any cards we have.
+  if (lastUserIdx === -1 && cards.length) {
+    for (const p of cards) {
+      const kind = Array.isArray(p) ? p[1] : p.kind;
+      const message = Array.isArray(p) ? p[2] : p.message;
+      body.appendChild(buildProgressCard(kind, message));
+    }
   }
   // If this thread is still working, re-attach the shimmer so the user
   // sees ongoing activity after switching tabs or reopening the app.
@@ -428,11 +494,23 @@ function renderChatBody() {
   const t = state.threads.get(state.selectedId);
   if (t && t.status === "running") {
     const log = d.progress_log || [];
-    const last = log.length ? log[log.length - 1] : null;
-    const lastMsg = last
-      ? (Array.isArray(last) ? last[2] : last.message)
-      : "Working…";
-    setLiveStatus(lastMsg);
+    // Walk backwards looking for the most recent SHORT transient status
+    // (step/tool/agent). Fall back to the short label of the latest card.
+    let shimmerText = "Working…";
+    for (let i = log.length - 1; i >= 0; i--) {
+      const e = log[i];
+      const kind = Array.isArray(e) ? e[1] : e.kind;
+      const msg = Array.isArray(e) ? e[2] : e.message;
+      if (!PROGRESS_CARD_KINDS.has(kind)) {
+        shimmerText = msg || shimmerText;
+        break;
+      }
+      if (PROGRESS_CARD_KINDS.has(kind)) {
+        shimmerText = shortStatusLabel(msg) || shimmerText;
+        break;
+      }
+    }
+    setLiveStatus(shimmerText);
   }
   scrollChatToEnd();
 }
@@ -483,6 +561,56 @@ function appendSystemNotice(text) {
   d.textContent = text;
   body.appendChild(d);
   scrollChatToEnd();
+}
+
+// Build a persistent step card for a progress / milestone event and append
+// it to the chat body. The shimmer (live-status) sits *after* this card so
+// new cards always insert above it.
+function appendProgressCard(kind, message) {
+  const body = document.getElementById("chatBody");
+  if (body.querySelector(".empty")) body.innerHTML = "";
+  const card = buildProgressCard(kind, message);
+  const live = body.querySelector(".live-status");
+  if (live) body.insertBefore(card, live);
+  else body.appendChild(card);
+  scrollChatToEnd();
+}
+
+function buildProgressCard(kind, message) {
+  const card = document.createElement("div");
+  card.className = "step-card kind-" + (kind || "info");
+
+  const head = document.createElement("div");
+  head.className = "step-card-head";
+  const dot = document.createElement("span");
+  dot.className = "step-card-icon";
+  dot.innerHTML = timelineIcon(kind);
+  head.appendChild(dot);
+
+  // Try to peel off a leading "**Title**" so the title sits in the header
+  // bar and the body just shows the supporting markdown.
+  const raw = String(message ?? "");
+  const m = raw.match(/^\s*\*\*([^*\n]+)\*\*\s*\n+([\s\S]*)$/);
+  let title, rest;
+  if (m) { title = m[1].trim(); rest = m[2]; }
+  else if (kind === "milestone") { title = raw.trim(); rest = ""; }
+  else { title = ""; rest = raw; }
+
+  if (title) {
+    const t = document.createElement("span");
+    t.className = "step-card-title";
+    t.textContent = title;
+    head.appendChild(t);
+  }
+  card.appendChild(head);
+
+  if (rest && rest.trim()) {
+    const bodyEl = document.createElement("div");
+    bodyEl.className = "step-card-body md";
+    bodyEl.innerHTML = renderMarkdown(rest);
+    card.appendChild(bodyEl);
+  }
+  return card;
 }
 
 function scrollChatToEnd() {
@@ -559,9 +687,33 @@ function clearLiveStatus() {
   if (el) el.remove();
 }
 
+// Kinds that carry rich content worth pinning in the main chat as a
+// persistent step card. Other kinds (step/tool/agent) are short transient
+// status used only to drive the shimmer.
+const PROGRESS_CARD_KINDS = new Set(["progress", "milestone"]);
+
+// Best-effort short label for the shimmer when a "progress" event arrives:
+// extract the bold "**Step Title**" the log_progress tool prefixes, or
+// fall back to the first line.
+function shortStatusLabel(text) {
+  if (!text) return "";
+  const s = String(text);
+  const m = s.match(/^\s*\*\*([^*\n]+)\*\*/);
+  if (m) return m[1].trim();
+  const firstLine = s.split(/\r?\n/, 1)[0];
+  return flattenMarkdown(firstLine);
+}
+
 function onThreadProgress(m) {
   if (state.selectedId === m.thread_id) {
-    setLiveStatus(m.message);
+    if (PROGRESS_CARD_KINDS.has(m.kind)) {
+      // Pin the rich content as a step card in the main chat. Update the
+      // shimmer to a short label so the user knows the next step is starting.
+      appendProgressCard(m.kind, m.message);
+      setLiveStatus(shortStatusLabel(m.message) || "Working…");
+    } else {
+      setLiveStatus(m.message);
+    }
   }
   // Append to the progress cache. If the full thread detail hasn't arrived
   // from the server yet (get_thread round-trip still in flight), create a
@@ -582,12 +734,6 @@ function onThreadProgress(m) {
     message: m.message,
     request_id: m.request_id,
   });
-  // Only re-render details when the Info/Progress tab is actually visible —
-  // no point rebuilding a hidden panel on every progress tick.
-  if (state.selectedId === m.thread_id
-      && (state.activeTab === "info" || state.activeTab === "progress")) {
-    renderDetails();
-  }
 }
 
 function onThreadCompleted(m) {
@@ -667,13 +813,7 @@ function loadThreadDetail(thread) {
   state.threadDetail.set(thread.id, thread);
   if (state.selectedId === thread.id) {
     renderChatBody();
-    // Only refresh the right pane if the user is currently looking at
-    // Info/Progress; Logs pulls from a separate state.logs buffer.
-    if (state.activeTab === "info" || state.activeTab === "progress") {
-      renderDetails();
-    } else if (state.activeTab === "logs") {
-      renderLogs();
-    }
+    if (state.activeTab === "logs") renderLogs();
   }
 }
 
@@ -693,7 +833,6 @@ function onSystemQueryComplete(m) {
   if (state.selectedId === SYSTEM_THREAD_ID) {
     clearLiveStatus();
     appendMsg("assistant", m.result || "");
-    if (state.activeTab === "info") renderDetails();
   }
 }
 function onSystemQueryError(m) {
@@ -701,7 +840,6 @@ function onSystemQueryError(m) {
   if (state.selectedId === SYSTEM_THREAD_ID) {
     clearLiveStatus();
     appendMsg("assistant", "⚠️  " + m.error);
-    if (state.activeTab === "info") renderDetails();
   }
 }
 
@@ -709,7 +847,6 @@ function clearSystemConversation() {
   state.systemMessages = [];
   if (state.selectedId === SYSTEM_THREAD_ID) {
     renderChatBody();
-    renderDetails();
   }
 }
 
@@ -842,8 +979,22 @@ window.addEventListener("resize", () => {
 // ─────────────────────────────────────────────────────────────────
 //  Right pane: details / progress / logs
 // ─────────────────────────────────────────────────────────────────
+// On desktop the right pane is COLLAPSED by default — main chat gets the
+// full width. Clicking a tab button expands the pane and shows that tab.
+// Clicking the active tab again collapses it.
+function setDetailsCollapsed(collapsed) {
+  document.querySelector(".app")?.classList.toggle("details-collapsed", collapsed);
+  state.detailsCollapsed = collapsed;
+}
+
 function switchTab(name) {
+  // If clicking the already-active tab, collapse the pane.
+  if (state.activeTab === name && !state.detailsCollapsed) {
+    setDetailsCollapsed(true);
+    return;
+  }
   state.activeTab = name;
+  setDetailsCollapsed(false);
   for (const b of document.querySelectorAll(".details .tabs button")) {
     b.classList.toggle("active", b.dataset.tab === name);
   }
@@ -855,119 +1006,22 @@ function switchTab(name) {
   renderActiveTab();
 }
 
+// Open the Logs tab from the chat header. If logs are already showing,
+// collapse the pane instead.
+function openLogsTab() {
+  if (!state.detailsCollapsed && state.activeTab === "logs") {
+    setDetailsCollapsed(true);
+    return;
+  }
+  switchTab("logs");
+}
+
 function renderDetails() {
-  const info = document.getElementById("panel-info");
-  const prog = document.getElementById("panel-progress");
-
-  if (state.selectedId === SYSTEM_THREAD_ID) {
-    info.innerHTML = '<div class="hint" style="margin-bottom:8px;">System thread — ephemeral Q&amp;A. Conversation is not persisted and is lost on app restart.</div>';
-    if (state.systemMessages.length) {
-      const actions = document.createElement("div");
-      actions.className = "actions";
-      actions.innerHTML = `<button class="danger" onclick="clearSystemConversation()">Clear conversation</button>`;
-      info.appendChild(actions);
-    }
-    prog.innerHTML = '<div class="empty">—</div>';
-    return;
-  }
-
-  const t = state.threadDetail.get(state.selectedId)
-        || state.threads.get(state.selectedId)
-        || state.archivedThreads.get(state.selectedId);
-  if (!t) {
-    info.innerHTML = '<div class="empty">(not found)</div>';
-    prog.innerHTML = '';
-    return;
-  }
-
-  info.innerHTML = "";
-  const card = document.createElement("div");
-  card.className = "info-card";
-  const head = document.createElement("div");
-  head.className = "info-card-head";
-  const headTitle = document.createElement("div");
-  headTitle.className = "info-card-title";
-  headTitle.textContent = t.title || "(untitled)";
-  const headTag = document.createElement("div");
-  headTag.className = "info-card-tag";
-  headTag.textContent = t.correlation_tag || ("#thread-" + t.id);
-  head.appendChild(headTitle);
-  head.appendChild(headTag);
-  card.appendChild(head);
-
-  const dl = document.createElement("dl");
-  const add = (k, v) => {
-    if (v == null || v === "") return;
-    const dt = document.createElement("dt"); dt.textContent = k; dl.appendChild(dt);
-    const dd = document.createElement("dd"); dd.textContent = String(v); dl.appendChild(dd);
-  };
-  add("Status", t.status);
-  add("Skill", t.skill_name);
-  add("Source", t.source);
-  if (t.external_user) add("External user", t.external_user);
-  if (t.created_at) add("Created", new Date(t.created_at * 1000).toLocaleString());
-  card.appendChild(dl);
-  info.appendChild(card);
-
-  const actions = document.createElement("div");
-  actions.className = "actions";
-  if (t.status === "archived") {
-    actions.innerHTML = `<button onclick="unarchiveThread('${t.id}')">Restore</button>`;
-  } else {
-    actions.innerHTML = `
-      <button onclick="archiveThread('${t.id}')">Archive</button>
-      <button class="danger" onclick="deleteThread('${t.id}')">Delete</button>`;
-  }
-  info.appendChild(actions);
-
-  // Progress panel — vertical timeline with kind icons, grouped by minute,
-  // duplicate timestamps suppressed.
-  prog.innerHTML = "";
-  const steps = t.progress_log || [];
-  if (!steps.length) {
-    prog.innerHTML = '<div class="empty">No progress events yet.</div>';
-  } else {
-    const tl = document.createElement("div");
-    tl.className = "timeline";
-    let lastMinute = "";
-    for (const step of steps) {
-      // Server persists entries as {ts, kind, message, request_id}; older
-      // client-side pushes may have used [ts, kind, msg] tuples. Handle both.
-      const ts   = Array.isArray(step) ? step[0] : step.ts;
-      const kind = Array.isArray(step) ? step[1] : step.kind;
-      const msg  = Array.isArray(step) ? step[2] : step.message;
-      const date = new Date((ts || 0) * 1000);
-      const time = date.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
-      const fullTime = date.toLocaleTimeString();
-      const showTime = time !== lastMinute;
-      lastMinute = time;
-
-      const item = document.createElement("div");
-      item.className = "tl-item kind-" + (kind || "info");
-      item.title = String(msg ?? "");
-
-      const dot = document.createElement("div");
-      dot.className = "tl-dot";
-      dot.innerHTML = timelineIcon(kind);
-      item.appendChild(dot);
-
-      const body = document.createElement("div");
-      body.className = "tl-body";
-      const meta = document.createElement("div");
-      meta.className = "tl-meta";
-      meta.innerHTML =
-        `<span class="tl-time" title="${fullTime}">${showTime ? time : ""}</span>` +
-        `<span class="tl-kind">${kind || "info"}</span>`;
-      body.appendChild(meta);
-      const txt = document.createElement("div");
-      txt.className = "tl-text md";
-      txt.innerHTML = renderMarkdown(String(msg ?? ""));
-      body.appendChild(txt);
-      item.appendChild(body);
-      tl.appendChild(item);
-    }
-    prog.appendChild(tl);
-  }
+  // The Info and Progress tabs were removed once their content was
+  // surfaced inline (step cards in the chat, status/skill in the chat
+  // header and thread list, archive/delete via chat-header + thread-item
+  // hover). renderDetails is kept as a no-op so legacy call sites — and
+  // any external code paths — don't blow up.
 }
 
 // Inline SVG icons for each progress kind. Kept tiny so the timeline dots
@@ -2333,6 +2387,7 @@ function renderInline(text) {
 }
 
 // Boot
+setDetailsCollapsed(true);
 connect();
 
 // Intercept clicks on file:// links anywhere in the UI and ask the agent
