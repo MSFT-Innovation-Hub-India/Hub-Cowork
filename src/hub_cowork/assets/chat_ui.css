@@ -31,9 +31,14 @@
   /* Right pane collapsed: hide it entirely and reclaim the column for the
      main chat. The tab-strip lives inside the right pane, so when the user
      wants to peek at logs/info they click the header buttons in the chat
-     pane (`openLogsTab`, etc) which expand the pane back. */
-  .app.details-collapsed { grid-template-columns: 280px 1fr 0; }
-  .app.details-collapsed section.details { display: none; }
+     pane (`openLogsTab`, etc) which expand the pane back.
+     Scoped to desktop only so this 2-class selector doesn't override the
+     responsive `.app` rules at narrow widths (which use a single-class
+     selector and would otherwise lose the cascade fight). */
+  @media (min-width: 901px) {
+    .app.details-collapsed { grid-template-columns: 280px 1fr 0; }
+    .app.details-collapsed section.details { display: none; }
+  }
   header.topbar {
     grid-column: 1 / -1;
     display: flex; align-items: center; padding: 0 14px;
@@ -1521,4 +1526,60 @@
     .step-card.kind-error     { background: rgba(220, 60, 60, 0.08); }
     .thread-item .thread-item-del:hover { background: rgba(255,255,255,0.06); }
     .chat-header-btn:hover { background: rgba(255,255,255,0.06); }
+  }
+
+  /* ─── Always-on hamburger + collapsible threads pane ──────────
+     Mirrors Claude / VS Code: the hamburger in the top bar slides
+     the thread list in/out on desktop and overlays it on narrow
+     viewports. */
+  .nav-toggle-left { display: inline-flex; }
+  /* Desktop-only: collapsing the threads pane shrinks its grid column to
+     0 (we keep the aside in the grid so main.chat stays in column 2).
+     Wrapped in min-width:901px so the responsive single/two-column
+     layouts below don't get overridden. */
+  @media (min-width: 901px) {
+    .app.threads-collapsed { grid-template-columns: 0 1fr 320px; }
+    .app.threads-collapsed.details-collapsed { grid-template-columns: 0 1fr 0; }
+    .app.threads-collapsed aside.threads { overflow: hidden; border-right: 0; }
+  }
+
+  /* ─── Threads pane footer (Claude-style identity badge) ───── */
+  .threads-footer {
+    padding: 10px 12px;
+    border-top: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; color: var(--muted);
+    min-width: 0;
+  }
+  .threads-footer .user-name {
+    flex: 1; min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    color: var(--text);
+  }
+
+  /* ─── Top-bar app menu (kebab popover) ──────────────────────── */
+  .app-menu { position: relative; display: inline-flex; }
+  .app-menu-popup {
+    position: absolute; top: calc(100% + 4px); right: 0;
+    min-width: 200px; padding: 4px;
+    background: var(--pane);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+    z-index: 200;
+    display: none;
+  }
+  .app-menu-popup.open { display: block; }
+  .app-menu-popup button {
+    display: flex; align-items: center; gap: 10px;
+    width: 100%; padding: 8px 10px;
+    background: transparent; border: 0; border-radius: 4px;
+    text-align: left; color: var(--text); font-size: 13px;
+    cursor: pointer;
+  }
+  .app-menu-popup button svg { width: 16px; height: 16px; flex: none; color: var(--muted); }
+  .app-menu-popup button:hover { background: rgba(0, 0, 0, 0.05); }
+  .app-menu-popup button:hover svg { color: var(--text); }
+  @media (prefers-color-scheme: dark) {
+    .app-menu-popup button:hover { background: rgba(255, 255, 255, 0.06); }
   }

@@ -93,7 +93,16 @@ function handleMessage(m) {
 function setAuth(ok, label) {
   state.authOk = ok;
   document.getElementById("authDot").className = "dot " + (ok ? "ok" : "bad");
-  document.getElementById("authText").textContent = label || (ok ? "Authenticated" : "Not signed in");
+  // Label from server is typically "Name <email>". Show just the name in
+  // the threads-pane footer; surface the full label (incl. email) on hover.
+  const raw = label || (ok ? "Authenticated" : "Not signed in");
+  const m = /^\s*(.*?)\s*<([^>]+)>\s*$/.exec(raw);
+  const name = m ? m[1] : raw;
+  const tip  = m ? `${m[1]} <${m[2]}>` : raw;
+  const txt = document.getElementById("authText");
+  txt.textContent = name;
+  const footer = document.getElementById("threadsFooter");
+  if (footer) footer.title = tip;
   document.getElementById("signinBtn").style.display = ok ? "none" : "";
 }
 
@@ -946,12 +955,20 @@ function _syncBackdrop() {
 }
 
 function toggleThreadsPane() {
-  const el = document.querySelector("aside.threads");
-  if (!el) return;
-  // Closing the other pane first keeps only one off-canvas pane visible.
-  document.querySelector("section.details")?.classList.remove("open");
-  el.classList.toggle("open");
-  _syncBackdrop();
+  // On narrow viewports the threads pane is an off-canvas overlay — keep
+  // the .open toggle. On desktop, slide it out by toggling a class on
+  // .app that collapses the threads column to 0.
+  if (_isXNarrow()) {
+    const el = document.querySelector("aside.threads");
+    if (!el) return;
+    document.querySelector("section.details")?.classList.remove("open");
+    el.classList.toggle("open");
+    _syncBackdrop();
+    return;
+  }
+  const app = document.querySelector(".app");
+  if (!app) return;
+  app.classList.toggle("threads-collapsed");
 }
 
 function toggleDetailsPane() {
@@ -2384,6 +2401,44 @@ function renderInline(text) {
   s = s.replace(/\u0001(\d+)\u0001/g, (_, n) => "<code>" + inlineCode[Number(n)] + "</code>");
 
   return s;
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  Top-bar app menu (kebab) — Settings / Restart / About
+// ─────────────────────────────────────────────────────────────────
+function toggleAppMenu(ev) {
+  if (ev) ev.stopPropagation();
+  const menu = document.getElementById("appMenu");
+  const btn = document.getElementById("appMenuBtn");
+  if (!menu) return;
+  const open = menu.classList.toggle("open");
+  if (btn) btn.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function closeAppMenu() {
+  const menu = document.getElementById("appMenu");
+  const btn = document.getElementById("appMenuBtn");
+  if (menu) menu.classList.remove("open");
+  if (btn) btn.setAttribute("aria-expanded", "false");
+}
+
+// Click anywhere outside the menu to dismiss it.
+document.addEventListener("click", (ev) => {
+  const wrap = document.querySelector(".app-menu");
+  if (wrap && !wrap.contains(ev.target)) closeAppMenu();
+});
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape") closeAppMenu();
+});
+
+function showAbout() {
+  alert(
+    "Hub Cowork\n\n" +
+    "Single-process Windows desktop agent for the Hub workflow.\n" +
+    "Routes user messages to skills, runs tools, and bridges Teams via Redis.\n\n" +
+    "WebSocket: ws://127.0.0.1:18080\n" +
+    "Data: ~/.hub-cowork/"
+  );
 }
 
 // Boot
