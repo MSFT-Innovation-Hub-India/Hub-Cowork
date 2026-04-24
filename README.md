@@ -701,6 +701,99 @@ There are four token consumers, all sharing the one credential:
 - **Refresh tokens** (~90 days) are themselves rolled forward on every successful use. So as long as you use the app at least once every ~90 days, your refresh token never expires.
 - **Multiple resource scopes** (Cognitive Services, Azure Search, Fabric, ARM, etc.) are all minted from the same refresh token via MSAL's `acquire_token_silent` — first request to a new scope triggers a silent token call, not an interactive prompt.
 
+### Where the bytes actually live
+
+There are two on-disk artefacts. They are deliberately separate.
+
+**1. `~/.hub-cowork/auth_record.json`** (written by Hub Cowork, plain JSON, ~1 KB, no secrets)
+
+Created in `run_az_login()` after a successful interactive sign-in:
+
+```python
+record = _credential.authenticate(scopes=["https://cognitiveservices.azure.com/.default"])
+_AUTH_RECORD_PATH.write_text(record.serialize())   # JSON dump of AuthenticationRecord
+```
+
+Contents are:
+
+```json
+{
+  "authority": "login.microsoftonline.com",
+  "client_id": "<azure-identity's default public client>",
+  "home_account_id": "<oid>.<tenant_id>",
+  "tenant_id": "<tenant_id>",
+  "username": "user@contoso.com",
+  "version": "1.0"
+}
+```
+
+This is **not** a token. It is a pointer that says *"the refresh token belonging to this user is somewhere in the MSAL cache — go find it."* On next process start, the deserialised record is passed to `InteractiveBrowserCredential(authentication_record=...)`, which lets MSAL look up the matching refresh-token entry by `home_account_id`.
+
+**2. The MSAL persistent token cache** (written by `azure-identity[persistent-cache]` via the `msal_extensions` library, encrypted by the OS keystore)
+
+| Platform | Backend | Where |
+|---|---|---|
+| **Windows** | DPAPI-encrypted file | `%LOCALAPPDATA%\.IdentityService\hub_cowork.cache` (the file name comes from `TokenCachePersistenceOptions(name="hub_cowork")`) |
+| **macOS** | Keychain | Service `hub_cowork` |
+| **Linux** | libsecret (gnome-keyring/KWallet) | Service `hub_cowork`. Falls back to plaintext if libsecret is missing and `allow_unencrypted_storage=True` is set (Hub Cowork doesn't set this — on Linux without libsecret, the cache becomes in-memory only). |
+
+The cache is a JSON document encrypted at rest, containing three categories of entries (MSAL terminology):
+
+| Entry | What it is | Lifetime |
+|---|---|---|
+| `AccessToken` | One per `(home_account_id, scope)` tuple. Bearer string + `expires_on`. | ~1 hour (Entra default; varies by tenant policy) |
+| `RefreshToken` | One per `home_account_id`. Used to mint new access tokens for any scope. | Sliding ~90 days; rolled forward on every use |
+| `Account` / `IdToken` | Identity metadata, last-known username, etc. | Indefinite |
+
+There are **no client secrets** — `InteractiveBrowserCredential` is a public-client flow (PKCE), so the refresh token is the only long-lived secret on the box, and it sits behind the OS keystore.
+
+### How a `get_token(...)` call actually flows
+
+```
+caller: _credential.get_token("https://search.azure.com/.default")
+          │
+          ▼
+azure-identity._SilentAuthenticationCredential
+  ├─ open MSAL persistent cache (DPAPI-decrypt the file)
+  ├─ look up account by home_account_id (from AuthenticationRecord)
+  ├─ MSAL.acquire_token_silent(scopes=["https://search.azure.com/.default"], account=…)
+  │     │
+  │     ├─ AccessToken cache hit AND not expired?
+  │     │     → return cached bearer (no network call)
+  │     │
+  │     ├─ AccessToken miss / expired, RefreshToken present?
+  │     │     → POST https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token
+  │     │         grant_type=refresh_token
+  │     │         refresh_token=<from cache>
+  │     │         scope=https://search.azure.com/.default
+  │     │       ← new AccessToken + (usually) a NEW RefreshToken (the old one is invalidated)
+  │     │     → write both back into the persistent cache (DPAPI-re-encrypt the file)
+  │     │     → return new bearer
+  │     │
+  │     └─ RefreshToken missing / Entra rejects it?
+  │           → raise ClientAuthenticationError
+  │
+  ▼
+caller's exception handler (e.g. get_responses_client) decides whether to fall
+back to interactive sign-in.
+```
+
+Two consequences worth knowing:
+
+- **Refresh-token rotation is automatic.** Every silent refresh writes a *new* refresh token to the cache and invalidates the old one server-side. This is why an idle laptop that hasn't talked to Entra in 6 months will need re-login, but a daily-used one effectively never does.
+- **Per-scope access tokens are independent cache entries.** First `get_token` for a new resource (say, Fabric on a session that's only used Azure OpenAI so far) will silently round-trip to Entra to mint a Fabric-scoped access token from the existing refresh token, then cache it for ~1 hour. No browser, no user prompt — but a network call.
+
+### How Hub Cowork's caches interact with refresh
+
+| Cache layer | Lives in | What's stored | When it refreshes |
+|---|---|---|---|
+| **OpenAI client** (`agent_core._responses_client`) | Process memory | The `OpenAI` SDK instance and its bearer string | Rebuilt when `time.time() > _responses_client_token_expires - 300` |
+| **FoundryIQ token** (`search_foundryiq._cached_token`) | Process memory | `AccessToken` namedtuple | Refreshed when `expires_on < now + 60` |
+| **Fabric token** (`query_fabric_agent._cached_token`) | Process memory | `AccessToken` namedtuple | Refreshed when `expires_on - now < 60` |
+| **MSAL persistent cache** | OS keystore (DPAPI/Keychain/libsecret) | `AccessToken` + `RefreshToken` per scope | Updated by every `_credential.get_token(...)` call that hits the network |
+
+The in-process caches are pure performance optimisations — they avoid touching the disk-backed MSAL cache (which involves DPAPI decrypt + JSON parse) on every API call. When they expire, they delegate to `_credential.get_token(...)`, which is where the real refresh logic (cached AT → refresh-token grant → interactive fallback) lives.
+
 ### When a browser prompt **does** appear
 
 | Trigger | What to expect |
