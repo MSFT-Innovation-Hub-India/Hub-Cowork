@@ -191,8 +191,12 @@ function markThreadStatus(id, status) {
 
 function toggleArchivedFilter() {
   state.showArchived = !state.showArchived;
-  document.getElementById("archToggle").textContent =
-    state.showArchived ? "Hide archived" : "Show archived";
+  const btn = document.getElementById("archToggle");
+  if (btn) {
+    const lbl = btn.querySelector(".label");
+    if (lbl) lbl.textContent = state.showArchived ? "Hide archived" : "Show archived";
+    btn.classList.toggle("active", state.showArchived);
+  }
   if (state.showArchived) send({type: "list_archived_threads"});
   renderThreadList();
 }
