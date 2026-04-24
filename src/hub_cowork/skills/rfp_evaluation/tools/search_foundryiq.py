@@ -160,6 +160,19 @@ def _get_credential(tenant_id: str, auth_mode: str):
     if _cached_credential is not None:
         return _cached_credential
 
+    # Prefer the shared agent credential (already has an AuthenticationRecord
+    # loaded from disk, so MSAL can silently acquire this resource's scope
+    # via the cached refresh token — no second browser prompt).
+    try:
+        from hub_cowork.core.agent_core import get_credential as _get_shared_cred
+        shared = _get_shared_cred()
+        if shared is not None:
+            logger.info("[FoundryIQ] Reusing shared agent credential (silent refresh)")
+            _cached_credential = shared
+            return shared
+    except Exception as ex:
+        logger.debug("[FoundryIQ] Could not reuse shared credential: %s", ex)
+
     if auth_mode == "cli":
         from azure.identity import AzureCliCredential
         logger.info("[FoundryIQ] Using AzureCliCredential for tenant %s", tenant_id)

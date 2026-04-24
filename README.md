@@ -639,13 +639,85 @@ Set in `.env` at the repo root, or in `src/hub_cowork/assets/.env.defaults` for 
 
 ## Authentication
 
-A single `InteractiveBrowserCredential` (created in `core/agent_core.py`) is shared across all components via `set_credential()` / `get_credential()`:
+Hub Cowork uses **a single shared `InteractiveBrowserCredential`** (constructed in `core/agent_core.py`) for **every** outbound Azure call — Azure OpenAI, FoundryIQ (Azure AI Search), Fabric Data Agent, ACS email, WorkIQ helpers, and the Redis bridge. There is no `DefaultAzureCredential` chain and no `az` CLI subprocess (the agent runs under `pythonw.exe` where `az` would have nowhere to print device codes).
 
-1. **First launch** — The UI shows a "Not signed in" banner. Click **Sign In** for Entra ID browser auth.
-2. **Token caching** — The `AuthenticationRecord` is serialised to `~/.hub-cowork/auth_record.json`; the token cache is persisted via Windows Credential Manager.
-3. **Subsequent launches** — The saved record enables silent token refresh — no browser prompt.
-4. **Token refresh** — The OpenAI client checks expiry with a 5-minute buffer, with fallback to interactive login if silent refresh fails. The token-refresh path on the OpenAI client is guarded by a lock.
-5. **Shared credential** — Used by OpenAI, WorkIQ helpers, ACS, and the Redis bridge (wrapped in `redis-entraid`'s `EntraIdCredentialsProvider`). No `DefaultAzureCredential` chain — no `az` CLI subprocesses under `pythonw.exe`.
+### One credential, one auth record, one disk cache
+
+```python
+# src/hub_cowork/core/agent_core.py
+_cache_options = TokenCachePersistenceOptions(name="hub_cowork")          # persistent MSAL cache
+_AUTH_RECORD_PATH = APP_HOME / "auth_record.json"                          # ~/.hub-cowork/auth_record.json
+
+_auth_record = AuthenticationRecord.deserialize(_AUTH_RECORD_PATH.read_text())  # if file exists
+_credential  = InteractiveBrowserCredential(
+    tenant_id=AZURE_TENANT_ID,
+    cache_persistence_options=_cache_options,
+    authentication_record=_auth_record,    # ← key: links the cache entries to a known user
+)
+set_credential(_credential)                # exposed via get_credential() to all consumers
+```
+
+The two pieces work together:
+
+- **`TokenCachePersistenceOptions(name="hub_cowork")`** — tells MSAL to back the in-memory token cache with a disk file under Windows Credential Manager (DPAPI-encrypted on Windows; libsecret/Keychain on Linux/macOS). Caches both **access tokens** (typ. ~1 hr lifetime, scope-specific) and the **refresh token** (typ. ~90 days, rolling).
+- **`AuthenticationRecord`** — a small JSON blob (`home_account_id`, `username`, `tenant_id`, `authority`, `client_id`) that tells MSAL *which* identity owns the cached entries. **Without it, even a populated cache is unusable** — MSAL has no way to map a `get_token()` request to a stored refresh token, so it falls back to interactive login.
+
+### Sign-in flow
+
+```
+First launch
+└─ no auth_record.json yet
+   └─ check_azure_auth() returns (False, "Not signed in")
+   └─ UI shows the "Sign in to Azure" button
+   └─ user clicks → run_az_login()
+      ├─ _credential.authenticate(scopes=["…cognitiveservices…/.default"])
+      │     └─ opens system browser, completes Entra ID OAuth
+      ├─ saves AuthenticationRecord to ~/.hub-cowork/auth_record.json
+      └─ rebuilds _credential with the saved record (so the running session starts using silent refresh immediately)
+
+Subsequent launches
+└─ auth_record.json found
+   └─ deserialize, build credential with record
+   └─ check_azure_auth() calls _credential.get_token(...) silently
+      └─ MSAL: cache hit on access token (within lifetime) → return immediately
+                cache miss → use refresh token to mint new access token (silent)
+                refresh token expired/revoked → raise → UI shows "Sign in" again
+```
+
+### Token refresh paths
+
+There are four token consumers, all sharing the one credential:
+
+| Consumer | Where it lives | Refresh logic |
+|---|---|---|
+| **Azure OpenAI** (Responses API) | `agent_core.get_responses_client()` | Caches OpenAI client + `expires_on`; on every call checks `now < expires_on - 300` (5-min skew buffer). On expiry, calls `_credential.get_token(...)` again — MSAL silently mints a new access token from the cached refresh token. If silent refresh raises, falls back to `run_az_login()` (interactive, last resort). The refresh path is guarded by `_responses_client_lock` so concurrent thread executors don't race. |
+| **FoundryIQ search** | `skills/rfp_evaluation/tools/search_foundryiq.py::_get_credential` | Reuses the shared credential via `agent_core.get_credential()`. Per-tool token cache (`_cached_token`) refreshes when `expires_on < now + 60`. Because the shared credential has the AuthRecord, `get_token("https://search.azure.com/.default")` is silent — no second browser prompt for the new resource scope. |
+| **Fabric Data Agent** | `skills/rfp_evaluation/tools/query_fabric_agent.py::_get_credential` | Same pattern as FoundryIQ. Refreshes when `expires_on - now < _TOKEN_REFRESH_BUFFER_SECONDS` (60s). Silent for `https://api.fabric.microsoft.com/.default`. |
+| **Redis bridge** (Azure Managed Redis) | `host/redis_bridge.py` | Wraps the shared credential in `redis-entraid`'s `EntraIdCredentialsProvider`, which handles connection-level reauth and access-token rotation transparently. |
+
+### Why "no popup until 90+ days idle"
+
+- **Access tokens** (~1 hr) are refreshed silently from the **refresh token** in the persistent cache. The user never sees this.
+- **Refresh tokens** (~90 days) are themselves rolled forward on every successful use. So as long as you use the app at least once every ~90 days, your refresh token never expires.
+- **Multiple resource scopes** (Cognitive Services, Azure Search, Fabric, ARM, etc.) are all minted from the same refresh token via MSAL's `acquire_token_silent` — first request to a new scope triggers a silent token call, not an interactive prompt.
+
+### When a browser prompt **does** appear
+
+| Trigger | What to expect |
+|---|---|
+| First-ever launch on a machine | One sign-in. Auth record is saved. |
+| `~/.hub-cowork/auth_record.json` deleted or corrupted | UI shows "Sign in" again. |
+| Refresh token expired (>90 days idle, password change, revocation, conditional-access policy update) | Next `get_token()` raises; OpenAI client falls back to `run_az_login()`; you'll see a popup. |
+| Wrong tenant in `.env` | All silent refreshes fail — re-sign-in succeeds against the new tenant. |
+
+If you see frequent popups, check the agent log for `Token refresh failed — attempting interactive login...` (emitted by `get_responses_client`). The exception message that follows pinpoints the MSAL failure (e.g. `AADSTS50173: refresh token used too late`, `AADSTS65001: consent revoked`, etc.).
+
+### Operational notes
+
+- `check_azure_auth()` is **non-interactive by design** — it never opens a browser, so you can poll it from the UI thread without surprising the user.
+- The auth record is small (~1 KB) and contains no secrets — only the user's home-account ID and tenant. The actual tokens live in the OS-level secure store managed by MSAL.
+- To force a re-sign-in (e.g. switching accounts), delete `~/.hub-cowork/auth_record.json` and restart. The MSAL cache for the prior account remains in Credential Manager but is harmless without the record.
+- `TokenCachePersistenceOptions(name="hub_cowork")` doubles as the Credential Manager target prefix. Forks of this app should change the `name` to avoid sharing the cache blob.
 
 ---
 
