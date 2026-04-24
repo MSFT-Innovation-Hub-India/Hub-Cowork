@@ -370,6 +370,23 @@ async def _handler(ws):
             "skills": get_loaded_skills(),
         }))
 
+        # First-run / per-user config nudge — flag any required-per-user
+        # env vars that are still empty so the UI can prompt the user to
+        # open Settings → Configuration. Shared infra ships in
+        # .env.defaults; these three intentionally do not.
+        try:
+            missing = [
+                k for k in ("RFP_OUTPUT_FOLDER", "RFP_SHARE_RECIPIENTS")
+                if not os.environ.get(k, "").strip()
+            ]
+            if missing:
+                await ws.send(json.dumps({
+                    "type": "config_warning",
+                    "missing": missing,
+                }))
+        except Exception:
+            pass
+
         # Send current service connectivity snapshot so the UI can paint
         # green/red dots immediately on connect (without waiting for the
         # next state change to arrive).

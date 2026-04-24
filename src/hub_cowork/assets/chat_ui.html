@@ -6,6 +6,12 @@
 <link rel="stylesheet" href="chat_ui.css" />
 </head>
 <body>
+<div id="configBanner" class="config-banner" style="display:none">
+  <span class="config-banner-icon" aria-hidden="true">⚙️</span>
+  <span class="config-banner-text" id="configBannerText"></span>
+  <button class="config-banner-cta" onclick="openConfig()">Open Settings</button>
+  <button class="config-banner-close" onclick="dismissConfigBanner()" title="Dismiss" aria-label="Dismiss">×</button>
+</div>
 <div class="app">
   <header class="topbar">
     <button id="toggleThreadsBtn" class="icon-only secondary nav-toggle nav-toggle-left"

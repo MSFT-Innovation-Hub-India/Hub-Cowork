@@ -21,12 +21,13 @@
   body {
     font-family: var(--font); color: var(--text); background: var(--bg);
     font-size: 13px; overflow: hidden;
+    display: flex; flex-direction: column;
   }
   .app {
     display: grid;
     grid-template-columns: 280px 1fr 320px;
     grid-template-rows: 40px 1fr;
-    height: 100vh;
+    flex: 1 1 auto; min-height: 0;
   }
   /* Right pane collapsed: hide it entirely and reclaim the column for the
      main chat. The tab-strip lives inside the right pane, so when the user
@@ -367,6 +368,26 @@
     margin-left: auto; background: var(--accent); color: #fff; border: 0;
     padding: 5px 12px; border-radius: 4px; cursor: pointer;
   }
+
+  /* First-run / per-user config nudge — sits above the topbar */
+  .config-banner {
+    background: #fff4e5; border-bottom: 1px solid #ffb74d;
+    padding: 8px 14px; display: flex; align-items: center; gap: 10px;
+    font-size: 13px; color: #5a3b00; flex: 0 0 auto;
+  }
+  .config-banner-icon { font-size: 14px; }
+  .config-banner-text { flex: 1; }
+  .config-banner-text b { font-weight: var(--fw-bold, 700); }
+  .config-banner-cta {
+    background: var(--accent); color: #fff; border: 0;
+    padding: 5px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;
+  }
+  .config-banner-cta:hover { filter: brightness(1.05); }
+  .config-banner-close {
+    background: transparent; border: 0; color: #5a3b00; cursor: pointer;
+    font-size: 18px; line-height: 1; padding: 0 4px;
+  }
+  .config-banner-close:hover { color: #000; }
 
   /* ------- Settings modal ------- */
   .modal-backdrop {

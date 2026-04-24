@@ -39,8 +39,11 @@ def _detect_timezone() -> str:
 
 LOCAL_TIMEZONE = _detect_timezone()
 
-ACS_ENDPOINT = os.environ["ACS_ENDPOINT"]
-ACS_SENDER_ADDRESS = os.environ["ACS_SENDER_ADDRESS"]
+# Read at import time but tolerate missing values — the app should still
+# boot for users who haven't yet configured a per-user ACS sender. The
+# email-sending paths re-validate at call time and surface a clear error.
+ACS_ENDPOINT = os.environ.get("ACS_ENDPOINT", "")
+ACS_SENDER_ADDRESS = os.environ.get("ACS_SENDER_ADDRESS", "")
 
 _email_client: EmailClient | None = None
 _credential: InteractiveBrowserCredential | None = None
@@ -85,6 +88,16 @@ def _resolve_organizer() -> tuple[str, str]:
 def _get_email_client() -> EmailClient:
     """Get or create the ACS email client using the logged-in user's credential."""
     global _email_client
+    if not ACS_ENDPOINT:
+        raise RuntimeError(
+            "ACS_ENDPOINT is not configured. Open Settings → Configuration "
+            "and set the Azure Communication Services endpoint."
+        )
+    if not ACS_SENDER_ADDRESS:
+        raise RuntimeError(
+            "ACS_SENDER_ADDRESS is not configured. Open Settings → "
+            "Configuration and set your verified sender email address."
+        )
     if _email_client is None:
         _email_client = EmailClient(
             endpoint=ACS_ENDPOINT,

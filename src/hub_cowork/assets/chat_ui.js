@@ -87,6 +87,7 @@ function handleMessage(m) {
       }
       break;
     case "skills_list":     _loadedSkills = Array.isArray(m.skills) ? m.skills : []; renderSkillsModal(); break;
+    case "config_warning":  showConfigBanner(Array.isArray(m.missing) ? m.missing : []); break;
     case "config_data":     onConfigData(m.config || {}); break;
     case "config_saved":    onConfigSaved(m); break;
     case "validate_speakers_started":  onSpeakersValidating(m); break;
@@ -115,6 +116,48 @@ function setAuth(ok, label) {
 
 function signin() {
   send({type: "signin"});
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  First-run / per-user config nudge
+// ─────────────────────────────────────────────────────────────────
+const _CONFIG_LABELS = {
+  RFP_OUTPUT_FOLDER:   "your RFP output folder (OneDrive path)",
+  RFP_SHARE_RECIPIENTS:"the RFP reviewer recipient list",
+};
+
+function showConfigBanner(missing) {
+  const banner = document.getElementById("configBanner");
+  const text   = document.getElementById("configBannerText");
+  if (!banner || !text || !missing || !missing.length) return;
+  // Honour the per-key dismiss memory: only show if at least one missing
+  // key has NOT already been dismissed by the user this session/install.
+  const dismissed = new Set(JSON.parse(
+    localStorage.getItem("hubCowork.configBannerDismissed") || "[]"));
+  const live = missing.filter(k => !dismissed.has(k));
+  if (!live.length) { banner.style.display = "none"; return; }
+  const phrases = live.map(k => _CONFIG_LABELS[k] || k);
+  let msg;
+  if (phrases.length === 1) msg = `Set ${phrases[0]} to enable email and RFP features.`;
+  else if (phrases.length === 2) msg = `Set ${phrases[0]} and ${phrases[1]} to finish setup.`;
+  else msg = `Set ${phrases.slice(0, -1).join(", ")}, and ${phrases[phrases.length - 1]} to finish setup.`;
+  text.innerHTML = `<b>Welcome!</b> ${msg}`;
+  banner.dataset.missing = JSON.stringify(live);
+  banner.style.display = "flex";
+}
+
+function dismissConfigBanner() {
+  const banner = document.getElementById("configBanner");
+  if (!banner) return;
+  let live = [];
+  try { live = JSON.parse(banner.dataset.missing || "[]"); } catch {}
+  const dismissed = new Set(JSON.parse(
+    localStorage.getItem("hubCowork.configBannerDismissed") || "[]"));
+  for (const k of live) dismissed.add(k);
+  localStorage.setItem(
+    "hubCowork.configBannerDismissed",
+    JSON.stringify([...dismissed]));
+  banner.style.display = "none";
 }
 
 // ─────────────────────────────────────────────────────────────────
