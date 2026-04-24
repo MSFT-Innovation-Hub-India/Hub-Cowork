@@ -24,6 +24,7 @@ Hub Cowork exhibits the design traits of emerging local‑agent platforms (Claud
 | **Three-way inbox classifier** | Incoming Teams messages are LLM-classified as `new` (start a thread), `existing` (continue a running thread, with `#thread-xxxx` tag as fast-path), or `system` (instant non-queued reply). |
 | **Human-in-the-loop confirmation** | Skills can pause mid-flow with `[AWAITING_CONFIRMATION]`. The thread parks at status `awaiting_user`, persists state, and resumes on the user's next message (local click or Teams reply). |
 | **Real-time status** | Ask "what's the status of my request?" any time — a non-queued system skill reports progress milestones without interrupting running work. |
+| **Service connectivity indicators** | Header pills show live green/red/grey status for each backing service (WorkIQ CLI, FoundryIQ, Fabric Data Agent, Redis/Teams bridge). Updated passively from tool envelopes and refreshed by lightweight background probes. |
 | **Skills-driven extensibility** | Each capability is a declarative YAML file. Add a new skill by dropping a YAML file into `src/hub_cowork/skills/` — no code changes. |
 | **Settings UI with env editor** | Gear icon in the chat header opens a modal to edit hub config (speakers, agenda folder) and environment variables (endpoints, model names, Redis), then restart. |
 | **Background operation** | Runs invisibly via `pythonw.exe` — no console window, no taskbar clutter until you summon it. |
@@ -422,13 +423,15 @@ hub-cowork/
 │   │   ├── thread_store.py          # LocalJsonThreadStore (debounced atomic writes); ThreadArchiveStore Protocol
 │   │   ├── hub_config.py            # Config loader — merges shipped defaults with ~/.hub-cowork/hub_config.json
 │   │   ├── app_paths.py             # Central app-home + branding constants ("Hub Cowork", ~/.hub-cowork/)
+│   │   ├── service_status.py        # Per-service connectivity monitor (passive envelope tracking + background probes)
 │   │   └── outlook_helper.py        # ACS email + .ics invite builder
 │   │
 │   ├── host/                    # Runtime hosts (UI, console, remote bridge, tray)
 │   │   ├── desktop_host.py         # WS+HTTP servers, pywebview UI, tray wire-up, ExecutorPool + Redis wiring
 │   │   ├── console.py               # Terminal REPL — no UI, no background mode (hub-cowork-console script)
 │   │   ├── redis_bridge.py          # Redis inbox poller, classifier, per-user gate, outbox writer, presence
-│   │   └── tray_icon.py             # Pure Win32 tray via ctypes (own message pump thread)
+│   │   ├── tray_icon.py             # Pure Win32 tray via ctypes (own message pump thread)
+│   │   └── ui_actions.py            # Shared WS/UI action handlers (sign-in, config save, restart)
 │   │
 │   ├── tools/                   # Shared tools (auto-discovered)
 │   │   ├── query_workiq.py
@@ -462,7 +465,9 @@ hub-cowork/
 │   │
 │   └── assets/                  # Shipped inside the wheel
 │       ├── .env.defaults            # Lowest-precedence env defaults
-│       ├── chat_ui.html             # Three-pane chat UI
+│       ├── chat_ui.html             # Three-pane chat UI markup
+│       ├── chat_ui.css              # UI styles
+│       ├── chat_ui.js               # UI state, WebSocket client, renderers
 │       ├── hub_config.default.json  # Default hub settings
 │       ├── agent_icon.png
 │       └── agent_icon.ico
@@ -585,9 +590,9 @@ On startup the client authenticates, connects to Redis using the **same `REDIS_N
 
 All messages are JSON with a `type` field. The UI and backend share the same protocol.
 
-**Client → server:** `create_thread`, `send_to_thread`, `list_threads`, `get_thread`, `archive_thread`, `unarchive_thread`, `list_archived_threads`, `delete_thread`, `system_query`, `signin`, `clear_history`, `get_logs`, `get_config`, `save_config`.
+**Client → server:** `create_thread`, `send_to_thread`, `list_threads`, `get_thread`, `archive_thread`, `unarchive_thread`, `list_archived_threads`, `delete_thread`, `system_query`, `signin`, `clear_history`, `get_logs`, `get_config`, `save_config`, `restart`.
 
-**Server → client:** `threads_list`, `thread_created`, `thread_updated`, `thread_detail`, `thread_started`, `thread_progress`, `thread_completed`, `thread_error`, `thread_archived`, `thread_unarchived`, `thread_deleted`, `log_entry`, `log_history`, `system_query_*`, `auth_status`, `skills_list`, `remote_message`.
+**Server → client:** `threads_list`, `thread_created`, `thread_updated`, `thread_detail`, `thread_started`, `thread_progress`, `thread_completed`, `thread_error`, `thread_archived`, `thread_unarchived`, `thread_deleted`, `log_entry`, `log_history`, `system_query_*`, `auth_status`, `signin_status`, `skills_list`, `service_status`, `config_data`, `config_saved`, `restart_ack`, `remote_message`.
 
 Every invocation carries a `request_id` (`uuid.uuid4().hex[:8]`) used for correlation across WebSocket, UI, Redis outbox, and log entries.
 
@@ -714,8 +719,8 @@ on `127.0.0.1:18080`.
 - **Same pattern used by** VS Code, Teams, Slack, Discord, GitHub
   Desktop, Azure Data Studio, 1Password, Notion, Postman.
 - **UI assets** live under [src/hub_cowork/assets/](src/hub_cowork/assets):
-  `chat_ui.html` (~180 lines markup), `chat_ui.css` (~560 lines),
-  `chat_ui.js` (~2,100 lines — state, WebSocket client, renderers,
+  `chat_ui.html` (~230 lines markup), `chat_ui.css` (~1,370 lines),
+  `chat_ui.js` (~2,150 lines — state, WebSocket client, renderers,
   Markdown). Vanilla JS, single mutable `state` object, imperative
   re-render functions, `textContent`-only (XSS-safe).
 

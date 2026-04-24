@@ -645,6 +645,25 @@ function loadThreadDetail(thread) {
     // Server is authoritative when it has entries; otherwise keep our buffer.
     if (!serverLog.length) thread.progress_log = existing.progress_log;
   }
+  // Merge any persisted per-thread code_log entries into state.logs so the
+  // Logs tab shows them for completed threads loaded from disk (the live
+  // ring buffer only has entries since the server started).
+  if (Array.isArray(thread.code_log) && thread.code_log.length) {
+    const seen = new Set(
+      state.logs
+        .filter(e => e.thread_id === thread.id)
+        .map(e => `${e.ts}|${e.msg}`)
+    );
+    for (const e of thread.code_log) {
+      const key = `${e.ts}|${e.msg}`;
+      if (!seen.has(key)) {
+        state.logs.push({...e, thread_id: thread.id});
+        seen.add(key);
+      }
+    }
+    state.logs.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    if (state.logs.length > 2000) state.logs = state.logs.slice(-2000);
+  }
   state.threadDetail.set(thread.id, thread);
   if (state.selectedId === thread.id) {
     renderChatBody();
@@ -652,6 +671,8 @@ function loadThreadDetail(thread) {
     // Info/Progress; Logs pulls from a separate state.logs buffer.
     if (state.activeTab === "info" || state.activeTab === "progress") {
       renderDetails();
+    } else if (state.activeTab === "logs") {
+      renderLogs();
     }
   }
 }
@@ -822,6 +843,7 @@ window.addEventListener("resize", () => {
 //  Right pane: details / progress / logs
 // ─────────────────────────────────────────────────────────────────
 function switchTab(name) {
+  state.activeTab = name;
   for (const b of document.querySelectorAll(".details .tabs button")) {
     b.classList.toggle("active", b.dataset.tab === name);
   }

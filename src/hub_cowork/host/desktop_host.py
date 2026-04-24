@@ -124,9 +124,7 @@ class _WebSocketLogHandler(logging.Handler):
             # Persist per-thread (non-system).
             if tid and tid != SYSTEM_THREAD_ID:
                 try:
-                    get_thread_manager().append_code_log(
-                        tid, record.levelname, record.getMessage()
-                    )
+                    get_thread_manager().append_code_log(tid, entry)
                 except Exception:
                     pass
             # Broadcast to UI.
