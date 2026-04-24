@@ -787,6 +787,17 @@
   }
   .thread-item.active .time { color: var(--accent); }
 
+  /* Unread indicator: blue dot on the right of the row + bold title.
+     Uses the existing .time slot's right edge area; placed before .time. */
+  .thread-item.unread .title { font-weight: var(--fw-bold, 700); color: var(--text); }
+  .thread-item.unread .row1::after {
+    content: ""; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent); flex: none; align-self: center;
+    margin-left: 6px;
+    box-shadow: 0 0 0 2px var(--accent-soft);
+  }
+  .thread-item.unread.active .row1::after { display: none; }
+
   /* ── Chat header ── */
   .chat-header {
     padding: 12px 18px; gap: 12px; border-bottom: 1px solid var(--border);

@@ -181,6 +181,13 @@ def notify(title: str, message: str):
 # ---------------------------------------------------------------------------
 
 def _broadcast(message: dict):
+    # Hook unread events to drive the tray icon badge so the user has a
+    # visual cue even when the window is hidden.
+    try:
+        if message.get("type") == "thread_unread":
+            _bump_unread()
+    except Exception:
+        pass
     data = json.dumps(message)
     if _loop is None:
         return
@@ -709,11 +716,46 @@ def _toggle_window():
         if getattr(_window, '_agent_hidden', True):
             _window.show()
             _window._agent_hidden = False
+            # Surfacing the window dismisses any pending tray indicator.
+            _clear_unread()
         else:
             _window.hide()
             _window._agent_hidden = True
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Unread (Teams) tray-badge tracking
+# ---------------------------------------------------------------------------
+
+_unread_count = 0
+
+
+def _bump_unread():
+    """Increment the unread counter and refresh the tray icon badge."""
+    global _unread_count
+    _unread_count += 1
+    if _tray:
+        n = _unread_count
+        tip = (f"{APP_DISPLAY_NAME} — {n} new message" + ("s" if n != 1 else ""))
+        try:
+            _tray.set_badge(True, tooltip=tip)
+        except Exception as e:
+            logger.warning("Tray badge set failed: %s", e)
+
+
+def _clear_unread():
+    """Reset the unread counter and remove the tray icon badge."""
+    global _unread_count
+    if _unread_count == 0 and _tray and not getattr(_tray, "_badge_on", False):
+        return
+    _unread_count = 0
+    if _tray:
+        try:
+            _tray.set_badge(False, tooltip=APP_DISPLAY_NAME)
+        except Exception as e:
+            logger.warning("Tray badge clear failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -945,8 +987,9 @@ def main():
     # 3. Start system tray icon (left-click to show/hide, right-click for menu)
     _setup_tray()
 
-    # 4. Toast to let user know it's running
-    notify(APP_DISPLAY_NAME, "Running in background. Click the tray icon to open.")
+    # 4. (No startup toast — the tray icon is the "I'm running" signal.
+    #     Toasts are reserved for things the user needs to react to:
+    #     HITL awaiting-confirmation and hard errors.)
 
     # 5. Tell Windows this is a distinct app (not generic pythonw.exe)
     #    so the taskbar shows our custom icon instead of the Python icon,

@@ -443,6 +443,8 @@ class RedisBridge:
                 with self._pending_lock:
                     self._pending_replies[request_id] = (msg_id, thread.id)
                 pool.submit(thread.id, text, request_id=request_id)
+                if self._on_broadcast:
+                    self._on_broadcast({"type": "thread_unread", "thread_id": thread.id})
                 return
 
         # kind == "new" — gate: only one in-flight remote task per Teams user.
@@ -506,6 +508,8 @@ class RedisBridge:
         with self._pending_lock:
             self._pending_replies[request_id] = (msg_id, thread.id)
         pool.submit(thread.id, text, request_id=request_id)
+        if self._on_broadcast:
+            self._on_broadcast({"type": "thread_unread", "thread_id": thread.id})
 
     # ------------------------------------------------------------------
     # System queries (cross-thread)

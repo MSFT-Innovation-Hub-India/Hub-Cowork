@@ -15,6 +15,7 @@ const state = {
   activeTab: "logs",           // currently visible right-pane tab (only Logs remains)
   detailsCollapsed: true,      // right pane starts collapsed on desktop
   systemMessages: [],          // ephemeral Q&A on the System pseudo-thread
+  unread: new Set(),           // thread_ids with unread remote (Teams) messages
 };
 
 // ─────────────────────────────────────────────────────────────────
@@ -79,6 +80,12 @@ function handleMessage(m) {
     case "system_query_complete": onSystemQueryComplete(m); break;
     case "system_query_error":    onSystemQueryError(m); break;
     case "remote_message":  appendSystemNotice("Remote msg from " + m.sender + ": " + m.text); break;
+    case "thread_unread":
+      if (m.thread_id && m.thread_id !== state.selectedId) {
+        state.unread.add(m.thread_id);
+        renderThreadList();
+      }
+      break;
     case "skills_list":     _loadedSkills = Array.isArray(m.skills) ? m.skills : []; renderSkillsModal(); break;
     case "config_data":     onConfigData(m.config || {}); break;
     case "config_saved":    onConfigSaved(m); break;
@@ -244,7 +251,11 @@ function renderThreadList() {
 
 function threadItemEl(t, isSystem) {
   const d = document.createElement("div");
-  d.className = "thread-item" + (state.selectedId === t.id ? " active" : "") + (isSystem ? " system" : "");
+  const isUnread = state.unread.has(t.id);
+  d.className = "thread-item"
+    + (state.selectedId === t.id ? " active" : "")
+    + (isSystem ? " system" : "")
+    + (isUnread ? " unread" : "");
   d.onclick = () => selectThread(t.id);
 
   const row1 = document.createElement("div");
@@ -304,6 +315,7 @@ function formatRelativeTime(unixSec) {
 // ─────────────────────────────────────────────────────────────────
 function selectThread(id) {
   state.selectedId = id;
+  state.unread.delete(id);
   renderThreadList();
   renderSelectedHeader();
   renderChatBody();
