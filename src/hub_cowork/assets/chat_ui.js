@@ -877,6 +877,20 @@ function updateComposerHasInput() {
   const box = document.getElementById("inputBox");
   if (!wrap || !box) return;
   wrap.classList.toggle("has-input", !!box.value.trim());
+  autoResizeInput(box);
+}
+
+// Grow the composer textarea to fit its content, capped by the CSS max-height
+// (overflow scrolls past the cap). Reset to "auto" first so it can shrink
+// again when the user deletes lines. The CSS max-height keeps the chat body
+// from being squeezed; the responsive grid is unaffected because the composer
+// is laid out by flex inside its own row.
+function autoResizeInput(box) {
+  if (!box) box = document.getElementById("inputBox");
+  if (!box) return;
+  box.style.height = "auto";
+  // scrollHeight includes padding; cap is enforced by CSS max-height.
+  box.style.height = box.scrollHeight + "px";
 }
 
 function sendInput() {
