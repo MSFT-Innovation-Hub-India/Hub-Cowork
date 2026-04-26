@@ -430,7 +430,9 @@ function renderSelectedHeader() {
     updateComposerLockState();
     return;
   }
-  tag.textContent = t.correlation_tag || ("#thread-" + t.id);
+  const fullTag = t.correlation_tag || ("#thread-" + t.id);
+  tag.textContent = fullTag.length > 12 ? fullTag.slice(0, 12) : fullTag;
+  tag.title = fullTag;
   title.textContent = t.title || "(untitled)";
   status.textContent = t.status || "unknown";
   status.className = "status-label " + (t.status || "");
@@ -1383,6 +1385,21 @@ function _collectEnvOverrides() {
     if (!editorKeys.has(k) && v != null && v !== "") out[k] = v;
   }
   return out;
+}
+
+function winMinimize() { send({type: "window_minimize"}); }
+function winClose()    { send({type: "window_hide"}); }
+
+let _winMaximized = false;
+const _WIN_MAX_ICON    = '<rect x="1" y="1" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1.5"/>';
+const _WIN_RESTORE_ICON = '<rect x="0" y="2" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M2 2V0h8v8H8" fill="none" stroke="currentColor" stroke-width="1.5"/>';
+function winToggleMaximize() {
+  _winMaximized = !_winMaximized;
+  send({type: _winMaximized ? "window_maximize" : "window_restore"});
+  const icon = document.getElementById("winMaxIcon");
+  const btn  = document.getElementById("winMaxBtn");
+  if (icon) icon.innerHTML = _winMaximized ? _WIN_RESTORE_ICON : _WIN_MAX_ICON;
+  if (btn)  btn.title = _winMaximized ? "Restore" : "Maximize";
 }
 
 function restartAgent() {

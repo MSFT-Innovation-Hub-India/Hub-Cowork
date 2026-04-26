@@ -32,9 +32,8 @@
       </span>
     </span>
     <span class="svc-group" id="svcGroupTeams" title="Redis channel with the Teams remote client">
-      <span class="svc-label">Teams:</span>
       <span class="svc-pill" id="svcRedisTeams" title="Redis channel / Teams relay">
-        <span class="dot"></span><span class="svc-name">Relay</span>
+        <span class="dot"></span><span class="svc-name">Teams Relay</span>
       </span>
     </span>
     <button id="signinBtn" class="secondary" style="display:none" onclick="signin()">
@@ -65,6 +64,17 @@
         </button>
       </div>
     </div>
+    <div class="win-controls" aria-label="Window controls">
+      <button class="win-btn" onclick="winMinimize()" title="Minimize" aria-label="Minimize">
+        <svg width="10" height="1" viewBox="0 0 10 1"><rect width="10" height="1" fill="currentColor"/></svg>
+      </button>
+      <button class="win-btn" id="winMaxBtn" onclick="winToggleMaximize()" title="Maximize" aria-label="Maximize">
+        <svg id="winMaxIcon" width="10" height="10" viewBox="0 0 10 10"><rect x="1" y="1" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+      </button>
+      <button class="win-btn win-close" onclick="winClose()" title="Hide to tray" aria-label="Hide to tray">
+        <svg width="10" height="10" viewBox="0 0 10 10"><line x1="1" y1="1" x2="9" y2="9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="9" y1="1" x2="1" y2="9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </button>
+    </div>
   </header>
 
   <aside class="threads">
@@ -79,8 +89,16 @@
       </button>
     </nav>
     <div class="filters">
-      <label><input type="checkbox" id="filterRunning" checked onchange="renderThreadList()"> Running</label>
-      <label><input type="checkbox" id="filterDone" checked onchange="renderThreadList()"> Completed</label>
+      <label class="toggle-label">
+        <input type="checkbox" id="filterRunning" class="toggle-input" checked onchange="renderThreadList()">
+        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        <span class="toggle-text">Running</span>
+      </label>
+      <label class="toggle-label">
+        <input type="checkbox" id="filterDone" class="toggle-input" checked onchange="renderThreadList()">
+        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        <span class="toggle-text">Completed</span>
+      </label>
     </div>
     <div class="list" id="threadList"></div>
     <div class="threads-footer" id="threadsFooter" title="">

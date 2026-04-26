@@ -42,9 +42,37 @@
   }
   header.topbar {
     grid-column: 1 / -1;
-    display: flex; align-items: center; padding: 0 14px;
+    display: flex; align-items: center; padding: 0 0 0 14px;
     background: var(--pane); border-bottom: 1px solid var(--border);
     gap: 12px;
+    -webkit-app-region: drag;
+    user-select: none;
+  }
+  /* All interactive elements inside the topbar must opt out of the drag region */
+  header.topbar button,
+  header.topbar input,
+  header.topbar a,
+  header.topbar .app-menu,
+  header.topbar .win-controls {
+    -webkit-app-region: no-drag;
+  }
+  /* Custom frameless window controls (minimize / hide-to-tray) */
+  .win-controls {
+    display: flex; align-items: stretch; margin-left: 4px; height: 100%;
+    flex: none;
+  }
+  .win-btn {
+    display: flex; align-items: center; justify-content: center;
+    width: 46px; height: 100%; border: 0; border-radius: 0;
+    background: transparent; color: var(--muted); cursor: pointer;
+    transition: background 120ms ease, color 120ms ease;
+    padding: 0;
+  }
+  .win-btn:hover { background: rgba(0,0,0,0.07); color: var(--text); }
+  .win-btn.win-close:hover { background: #e81123; color: #fff; }
+  @media (prefers-color-scheme: dark) {
+    .win-btn:hover { background: rgba(255,255,255,0.1); }
+    .win-btn.win-close:hover { background: #e81123; color: #fff; }
   }
   header .title { font-weight: 600; }
   header .user {
@@ -111,10 +139,27 @@
   .threads .tools button:hover { background: var(--n2, rgba(0,0,0,0.05)); }
   .threads .tools button.active { background: var(--accent-soft, rgba(31,111,235,0.12)); color: var(--accent); }
   .threads .filters {
-    padding: 6px 8px; border-bottom: 1px solid var(--border);
-    display: flex; gap: 4px; font-size: 11px; color: var(--muted);
+    padding: 6px 10px; border-bottom: 1px solid var(--border);
+    display: flex; gap: 10px; align-items: center;
   }
-  .threads .filters label { cursor: pointer; }
+  .toggle-label {
+    display: flex; align-items: center; gap: 6px; cursor: pointer;
+    user-select: none; font-size: 11px; color: var(--muted);
+  }
+  .toggle-input { display: none; }
+  .toggle-track {
+    width: 28px; height: 16px; border-radius: 8px;
+    background: var(--border-strong); position: relative; flex: none;
+    transition: background 160ms ease;
+  }
+  .toggle-thumb {
+    width: 12px; height: 12px; border-radius: 50%; background: #fff;
+    position: absolute; top: 2px; left: 2px;
+    transition: left 160ms ease;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.25);
+  }
+  .toggle-input:checked + .toggle-track { background: var(--accent); }
+  .toggle-input:checked + .toggle-track .toggle-thumb { left: 14px; }
   .threads .list { flex: 1; overflow-y: auto; }
   .thread-item {
     padding: 10px 12px; border-bottom: 1px solid var(--border);

@@ -585,6 +585,19 @@ async def _handler(ws):
                     kwargs={"broadcast": _broadcast},
                     daemon=True,
                 ).start()
+            elif mtype == "window_minimize":
+                if _window is not None:
+                    _window.minimize()
+            elif mtype == "window_maximize":
+                if _window is not None:
+                    _window.maximize()
+            elif mtype == "window_restore":
+                if _window is not None:
+                    _window.restore()
+            elif mtype == "window_hide":
+                _hide_window()
+                if _window is not None:
+                    _window._agent_hidden = True
             elif mtype == "restart":
                 # Spawn a fresh process and exit. Used by Settings →
                 # "Restart agent" so the user can apply env-var changes
@@ -665,6 +678,37 @@ def _run_server():
 # Window show/hide
 # ---------------------------------------------------------------------------
 
+def _fix_frameless_resize():
+    """Re-add WS_SIZEBOX + WS_MAXIMIZEBOX to the frameless window.
+
+    frameless=True sets WS_POPUP which strips the resize border. Restoring
+    these two style bits gives back edge/corner drag-resize and the OS
+    maximize behaviour without bringing back the native title bar.
+    """
+    if not IS_WIN or _window is None:
+        return
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        GWL_STYLE    = -16
+        WS_SIZEBOX   = 0x00040000
+        WS_MAXIMIZEBOX = 0x00010000
+        SWP_NOMOVE      = 0x0002
+        SWP_NOSIZE      = 0x0001
+        SWP_NOZORDER    = 0x0004
+        SWP_FRAMECHANGED = 0x0020
+        hwnd = user32.FindWindowW(None, WINDOW_TITLE)
+        if hwnd:
+            style = user32.GetWindowLongW(hwnd, GWL_STYLE)
+            user32.SetWindowLongW(hwnd, GWL_STYLE,
+                                  style | WS_SIZEBOX | WS_MAXIMIZEBOX)
+            user32.SetWindowPos(hwnd, None, 0, 0, 0, 0,
+                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED)
+            logger.info("Frameless resize border restored (hwnd=%s)", hwnd)
+    except Exception as e:
+        logger.warning("Failed to restore frameless resize border: %s", e)
+
+
 def _set_taskbar_icon():
     """Force our custom icon on the pywebview HWND so the taskbar shows it
     instead of the default pythonw.exe Python icon."""
@@ -710,6 +754,9 @@ def _set_taskbar_icon():
                 set_parent_window_handle(int(hwnd))
         except Exception as e:
             logger.debug("Could not register parent HWND for auth: %s", e)
+
+        # Restore resize handles stripped by frameless=True
+        _fix_frameless_resize()
     except Exception as e:
         logger.warning("Failed to set taskbar icon: %s", e)
 
@@ -1045,6 +1092,7 @@ def main():
         text_select=True,
         on_top=False,
         hidden=True,
+        frameless=True,
     )
     _window._agent_hidden = True
     _window.events.closing += _on_closing
