@@ -17,6 +17,7 @@ All code lives under `src/hub_cowork/` and is packaged/installed as the `hub-cow
 | Hub config | `core/hub_config.py` | Merges shipped defaults (`assets/hub_config.default.json`) with user overrides (`~/.hub-cowork/hub_config.json`); also stores `_env_overrides` for the Settings UI env editor |
 | Service status | `core/service_status.py` | Tracks reachability of `workiq`, `foundryiq`, `fabric_agent`, `redis_teams`; updated passively from `_tool_result` envelopes and actively by the Redis bridge; broadcast to UI as `service_status` events |
 | App paths | `core/app_paths.py` | Central app-home + branding constants (`~/.hub-cowork/`, `"Hub Cowork"`) |
+| Computer-Use harness | `core/computer_use.py` | Generic Azure OpenAI gpt-5.4 + Playwright Chromium loop. Use-case-agnostic: skills supply natural-language `instructions`, `start_url`, and `allow_domains`; harness owns the screenshot/action loop, key-mapping table, domain allow-list policing, and safety-check handling. Sync `run_computer_use_task(...)` wraps `asyncio.run` so tool handlers can call it directly. |
 | Email/calendar | `core/outlook_helper.py` | ACS email + `.ics` invite builder |
 | Desktop host | `host/desktop_host.py` | WebSocket server (18080), HTTP server (18081), pywebview three-pane UI, tray wire-up, wires `ThreadManager` observers + `ExecutorPool` + optional Redis bridge |
 | Console host | `host/console.py` | Terminal REPL — no UI, no Redis bridge (exposed as `hub-cowork-console` script) |
@@ -24,8 +25,8 @@ All code lives under `src/hub_cowork/` and is packaged/installed as the `hub-cow
 | Settings UI actions | `host/ui_actions.py` | Ad-hoc server-side actions triggered by the Settings modal (e.g. `validate_speakers`) — runs in a worker thread, broadcasts progress over the WebSocket |
 | Tray icon | `host/tray_icon.py` | Raw Win32 ctypes tray with its own message-pump thread |
 | Shared tools | `tools/*.py` | `query_workiq`, `log_progress`, `get_task_status`, `get_hub_config`, `create_word_doc`, `resolve_speakers`, `send_email` |
-| Skill-local tools | `skills/<group>/tools/*.py` | Tools only available to one skill group (`engagement_context`, `create_meeting_invites`, RFP tools) |
-| Skills | `skills/**/*.yaml` | Declarative agents (`qa`, `task_status`, `agenda_repurpose`, `meeting_invites`, `rfp_evaluation`, and the 4-phase `hub_agenda_creation` chain) |
+| Skill-local tools | `skills/<group>/tools/*.py` | Tools only available to one skill group (`engagement_context`, `create_meeting_invites`, RFP tools, `shelf_watch` tools) |
+| Skills | `skills/**/*.yaml` | Declarative agents (`qa`, `task_status`, `agenda_repurpose`, `meeting_invites`, `rfp_evaluation`, `shelf_watch`, and the 4-phase `hub_agenda_creation` chain) |
 | Assets | `assets/` | `.env.defaults`, `chat_ui.html`, `hub_config.default.json`, icons — all shipped inside the wheel |
 
 See [README.md](../README.md) for the full architecture diagram, skills, and protocol reference.
