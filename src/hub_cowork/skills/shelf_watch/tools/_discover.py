@@ -40,7 +40,7 @@ from hub_cowork.tools._tool_result import ok, error
 # Reuse the retailer registry, region resolver, headless default, slug,
 # and JSON-extraction helpers from the sibling deep-scrape tool so we
 # always stay in lockstep with whatever the user has configured.
-from hub_cowork.skills.shelf_watch.tools.compare_shelf_prices import (
+from hub_cowork.skills.shelf_watch.tools._compare import (
     _RETAILERS,
     _resolve_region,
     _resolve_headless_default,

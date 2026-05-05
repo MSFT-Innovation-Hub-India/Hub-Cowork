@@ -96,7 +96,7 @@ Hub Cowork is **skills-driven** — each capability is a declarative YAML file r
 | **Engagement Agenda Publish** (`engagement_agenda_publish`) | full | yes | Phase 4: create a Word document from the agenda and save to the configured output folder (OneDrive-synced) |
 | **Agenda Repurpose** (`agenda_repurpose`) | full | yes | Conversational: retrieve an existing agenda, collect new customer details (name, date, venue), produce a repurposed Word document |
 | **RFP Evaluation** (`rfp_evaluation`) | full | yes | Retrieve an RFP via WorkIQ, consult FoundryIQ + Fabric Data Agent, synthesise a Bid Intelligence Brief, save to OneDrive, share with the team |
-| **Shelf Watch** (`shelf_watch`) | full | yes | Three-turn computer-use skill: (1) confirm SKUs and retailers; (2) **discovery sweep** — gpt-5.4 + Playwright Chromium searches each retailer and a vision LLM triages the result page into up to N matching variants per retailer (default 3, see `shelf_watch_max_variants_per_retailer`); when the user has multiple matches the skill asks which variants to keep, otherwise it auto-proceeds; (3) **deep scrape** — for each confirmed variant, navigate to the PDP and a vision LLM extracts price, MRP, EMI, exchange offer, bank offers, delivery, seller, warranty, rating, and category-specific specs (auto-planned per SKU). Variant-aware "vs Last Run" deltas. Persists snapshot to OneDrive, renders a Word report with verdict line. HITL on scope and on variant selection. |
+| **Shelf Watch** (`shelf_watch`) | full | yes | Single-tool computer-use skill driven by `shelf_watch_run`. The tool owns all flow control — SKU plausibility check, **discovery sweep** (gpt-5.4 + Playwright Chromium searches each retailer; a vision LLM triages the result page into up to N matching variants per retailer, default 3, see `shelf_watch_max_variants_per_retailer`), match-score gating (strong ≥ 80%, borderline 40–79%), variant disambiguation prompting, and **deep scrape** (per confirmed variant: navigate to the PDP, vision LLM extracts price, MRP, EMI, exchange offer, bank offers, delivery, seller, warranty, rating, and category-specific specs auto-planned per SKU). Variant-aware "vs Last Run" deltas. Persists snapshot to OneDrive, renders a Word report with verdict line. The tool returns `needs_plausibility_confirmation`, `needs_disambiguation`, `complete`, or `cancelled` envelopes; the skill is a thin persona that translates the user's reply into a structured `user_choice`. |
 | **Q&A** (`qa`) | mini | yes | Conversational Q&A about M365 data with per-thread history |
 | **Task Status** (`task_status`) | mini | no | Report current thread progress and active-thread count — responds instantly even while a task is running |
 | *(Router direct)* | mini | no | Greetings and small talk — handled by the router (`"none"` classification) without invoking a skill |
@@ -158,61 +158,69 @@ A different shape of skill: instead of querying a backend API, the agent **drive
 1. **Pass 1 — Navigation (CUA)** drives the browser, scrolls the entire PDP, and produces a complete set of viewport screenshots. It is told NOT to extract anything; its only success criterion is "DONE" / "BLOCKED &lt;reason&gt;".
 2. **Pass 2 — Vision extraction (`gpt-5`)** receives all the captured screenshots in one shot and emits the strict JSON schema. No action loop, no early-exit incentive — pure structured reading.
 
-**Why a discovery turn?** A single user query like "LG 32-inch HD LED TV" can match many catalogue entries on each retailer. Letting the navigator pick "the best one" silently risks landing on the wrong product (a 55-inch instead of a 32-inch, a Smart instead of HD, an OLED instead of LED). The skill instead does a cheap **discovery sweep first** — it lists what each retailer has and asks the user which variants to deep-scrape. When every (SKU, retailer) has 0 or 1 match, the skill skips the ask and proceeds straight to scraping.
+**Why a discovery turn?** A single user query like "LG 32-inch HD LED TV" can match many catalogue entries on each retailer. Letting the navigator pick "the best one" silently risks landing on the wrong product (a 55-inch instead of a 32-inch, a Smart instead of HD, an OLED instead of LED). The skill instead does a cheap **discovery sweep first** — it lists what each retailer has and asks the user which variants to deep-scrape. When every (SKU, retailer) has 0 or 1 strong match, the tool skips the ask and proceeds straight to scraping.
+
+**One tool, deterministic flow.** Earlier versions of this skill exposed three separate tools to the LLM (`discover_shelf_variants`, `compare_shelf_prices`, `build_shelf_report`) and asked the skill prompt to drive the state machine — turn detection, score gating, variant filtering, the `[AWAITING_CONFIRMATION]` dance. That worked but was fragile: every flow change meant re-engineering a multi-page prompt. The current version collapses the entire workflow into a single tool, `shelf_watch_run`, that returns one of four `stage` envelopes. The skill prompt is now a thin persona whose only job is to render envelopes as conversation and translate the user's reply into a structured `user_choice` token. State across turns lives in a small per-thread session file managed by `_session.py`.
 
 ```
   User: "shelf watch on LG 32 inch HD LED TV"
     │
     ▼
-  Turn 1: shelf_watch  (conversational, HITL)
-    │  Confirm SKUs and retailers → [AWAITING_CONFIRMATION]
-    ▼
-  Turn 2: User says "yes" → DISCOVERY SWEEP
+  Skill calls shelf_watch_run(skus=[...], retailers=[...], headless=False)
     │
-    ├── discover_shelf_variants  (per SKU × retailer)
+    ├── (optional) PLAUSIBILITY CHECK
+    │     small-model sanity check on each SKU string. If any look implausible
+    │     ("LG HD LED 65 inch TV" — 65" panels are 4K UHD), tool returns:
+    │        {stage: "needs_plausibility_confirmation",
+    │         concerns: [{sku, issue, suggested}, ...]}
+    │     → skill renders concerns, asks: accept / keep / cancel
+    │     → next call: user_choice=accept_suggestions|keep_original|cancel
+    │
+    ├── DISCOVERY SWEEP  (per SKU × retailer; via `_discover.py`)
     │     ├── PASS 1: CUA → homepage → search → scroll results page → DONE
     │     │   (no PDP click; saves screenshots of the result grid)
-    │     │
     │     └── PASS 2: vision LLM triage
     │         ├─ apply RELEVANCE GATE (brand + size + capacity + model line)
-    │         └─ return up to N matching titles with `why_match` + `position`
+    │         └─ return up to N matching titles with match_pct + `gaps`
     │            (N defaults to `shelf_watch_max_variants_per_retailer`, default 3)
     │
-    ├── If every (SKU, retailer) has 0 or 1 match → skip ask, jump to deep-scrape
-    │
-    └── Otherwise: present matches grouped by SKU → [AWAITING_CONFIRMATION]
-        ("Croma has 3 matches: 1. <title>, 2. <title>, 3. <title> — pick which to scrape")
-    │
-    ▼
-  Turn 3: User confirms / narrows → DEEP SCRAPE
+    ├── MATCH-SCORE GATING
+    │     strong ≥ 80%, borderline 40–79%. If every entry has 0 matches OR
+    │     exactly one strong match → auto-proceed to deep scrape. Otherwise
+    │     tool returns:
+    │        {stage: "needs_disambiguation",
+    │         summary: [{sku, retailers: [{label, strong, borderline}]}],
+    │         all_borderline_skus: [...], default_variant_count: N}
+    │     → skill renders summary grouped by SKU, asks:
+    │        proceed | include_borderline | top_only | custom | cancel
+    │     → next call: user_choice + (optional) selected_variants
     │
     ├── _plan_attributes(sku)   (CHAT_MODEL_SMALL — once per SKU, cached across variants)
     │      → {category, attributes:[{key,label,hint}, …]}
     │
-    ├── compare_shelf_prices  (per confirmed variant — {sku, retailer, variant_title})
-    │     │
-    │     ├── PASS 1: CUA → homepage → search → click the variant whose title matches
-    │     │   → scroll the entire PDP top-to-bottom → DONE
-    │     │
+    ├── DEEP SCRAPE  (per confirmed variant; via `_compare.py`)
+    │     ├── PASS 1: CUA → click the variant whose title matches → scroll PDP → DONE
     │     └── PASS 2: vision LLM extracts strict JSON
-    │         ├─ RELEVANCE GATE: verify product_title actually matches the requested
-    │         │  variant; emit {"blocked": true, "reason": "wrong_product: ..."}
-    │         │  if the navigator wandered
+    │         ├─ RELEVANCE GATE: verify product_title matches the requested variant;
+    │         │  emit {"blocked": true, "reason": "wrong_product: ..."} if not
     │         └─ otherwise emit price/MRP/EMI/exchange/bank_offers/delivery/seller/
     │            warranty/rating/category_attrs → `_normalize_payload()` reconciles
-    │            loose keys (price/deal_price/selling_price → price_inr, ₹ strings →
-    │            ints, "Currently Unavailable" → in_stock=false, unknowns →
-    │            category_attrs blob)
+    │            loose keys (₹ strings → ints, "Currently Unavailable" →
+    │            in_stock=false, unknowns → category_attrs blob)
     │
     ├── Persist snapshot to `<agenda_output_folder>/shelf-watch/runs/<ts>/`
     │     plus rolling `history.json` (variant-aware key: sku||retailer||variant_title)
     │
-    └── build_shelf_report  → markdown + Word doc, grouped by SKU. Each variant
-                              is its own row; retailer cell shows
-                              "Croma<br><sub>LG 80cm 32 HD LED TV</sub>". Verdict
-                              line picks the cheapest in-stock variant. "vs Last
-                              Run" delta is variant-aware.
+    └── BUILD REPORT  (via `_report.py`)  → returns:
+          {stage: "complete", report_markdown: "...",
+           previous_run_timestamp, rows_captured, rows_blocked}
+          markdown + Word doc, grouped by SKU. Each variant is its own row;
+          retailer cell shows "Croma<br><sub>LG 80cm 32 HD LED TV</sub>".
+          Verdict line picks the cheapest in-stock variant. "vs Last Run"
+          delta is variant-aware.
 ```
+
+The four submodules under `skills/shelf_watch/tools/` (all underscore-prefixed so the tool loader skips them) split the orchestrator's responsibilities: `_discover.py` runs the discovery sweep + triage, `_compare.py` runs the deep-scrape pass per variant, `_report.py` builds the markdown + Word report and persists run memory, and `_session.py` reads/writes the per-thread session state that lets `shelf_watch_run` resume across HITL pauses. Only `shelf_watch_run.py` is registered as an LLM-visible tool.
 
 **Why a generic harness?** [`core/computer_use.py`](src/hub_cowork/core/computer_use.py) owns Playwright, the Responses-API loop, screenshot capture, action execution, the domain allow-list, and safety-check handling. Skills supply only the natural-language `instructions`, the `start_url`, and the `allow_domains`. New computer-use skills (Best Buy comparison, FedEx tracking dashboard, FAA filings, anything) should never fork the harness — they write a new skill-local tool that builds different instructions and calls `run_computer_use_task(...)`. The two-pass extraction pattern (CUA navigates → vision LLM extracts) generalizes too: it lives in the skill, not the harness, so each skill chooses its own extraction schema.
 
@@ -369,7 +377,7 @@ _load_env_files()        # 2. load_dotenv(.env, override=False)
 | Setting | Where | Read by |
 |---|---|---|
 | `hub_name`, `topic_catalog`, `default_session_start_time`, `agenda_output_folder`, `agenda_template_path` | Hub config (top level of `hub_config.json`) | Skills, via `get_hub_config` tool |
-| `shelf_watch_locale`, `shelf_watch_timezone`, `shelf_watch_headless`, `shelf_watch_retailers`, `shelf_watch_max_variants_per_retailer` | Hub config (top level of `hub_config.json`) | `shelf_watch` skill, read directly by `compare_shelf_prices.py` and `discover_shelf_variants.py` |
+| `shelf_watch_locale`, `shelf_watch_timezone`, `shelf_watch_headless`, `shelf_watch_retailers`, `shelf_watch_max_variants_per_retailer` | Hub config (top level of `hub_config.json`) | `shelf_watch` skill, read directly by `_compare.py` and `_discover.py` under `skills/shelf_watch/tools/` |
 | `AZURE_OPENAI_*`, `ACS_*`, `AZURE_TENANT_ID`, `AZ_REDIS_CACHE_ENDPOINT`, `REDIS_*`, `FOUNDRYIQ_*`, `FABRIC_*`, `RESOURCE_TENANT_ID`, `GRAPH_*`, `RFP_OUTPUT_FOLDER`, `RFP_SHARE_RECIPIENTS`, `WORKIQ_PATH` | Env vars (any of the 3 layers above) | Anywhere via `os.environ`, plus `get_hub_config` (see consistency note) |
 
 ### One consistent read path (consistency note)
@@ -518,7 +526,7 @@ After changing env values you need to restart so module-level reads (e.g. `ENDPO
 
 10. **Skill sub-agents** — Azure OpenAI Responses API. Tool definitions + instructions drive the autonomous tool-call loop. `previous_response_id` is stored on the `ConversationThread` so every thread has its own LLM context.
 
-11. **Tool execution layer** — `query_workiq`, `log_progress`, `get_task_status`, `get_hub_config`, `create_word_doc`, `resolve_speakers`, `send_email` are shared; `engagement_context` (agenda chain), `create_meeting_invites` (meeting invites), `create_rfp_brief_doc` / `query_fabric_agent` / `search_foundryiq` / `share_onedrive_document` (RFP), and `discover_shelf_variants` / `compare_shelf_prices` / `build_shelf_report` (shelf watch) are skill-local.
+11. **Tool execution layer** — `query_workiq`, `log_progress`, `get_task_status`, `get_hub_config`, `create_word_doc`, `resolve_speakers`, `send_email` are shared; `engagement_context` (agenda chain), `create_meeting_invites` (meeting invites), `create_rfp_brief_doc` / `query_fabric_agent` / `search_foundryiq` / `share_onedrive_document` (RFP), and `shelf_watch_run` (shelf watch — single orchestrator over the private `_discover` / `_compare` / `_report` / `_session` helpers) are skill-local.
 
 12. **Computer-Use harness** ([`core/computer_use.py`](src/hub_cowork/core/computer_use.py)) — Generic Azure OpenAI gpt-5.4 + Playwright Chromium loop used by the `shelf_watch` skill. Owns the screenshot/action loop, key-mapping table, domain allow-list policing, and safety-check handling. Skills supply natural-language `instructions`, `start_url`, and `allow_domains` only.
 
@@ -593,8 +601,11 @@ hub-cowork/
 │   │   └── shelf_watch/             # Computer-Use skill (gpt-5.4 + Playwright)
 │   │       ├── shelf_watch.yaml
 │   │       └── tools/
-│   │           ├── compare_shelf_prices.py  # Per-(SKU, retailer) Computer-Use orchestration
-│   │           ├── build_shelf_report.py    # Markdown + Word report with vs-Last-Run delta
+│   │           ├── shelf_watch_run.py       # Single LLM-visible orchestrator (plausibility → discovery → disambiguation → deep scrape → report)
+│   │           ├── _discover.py             # Discovery sweep + vision-LLM triage (private)
+│   │           ├── _compare.py              # Per-variant deep scrape + payload normalization (private)
+│   │           ├── _report.py               # Markdown + Word report with vs-Last-Run delta (private)
+│   │           ├── _session.py              # Per-thread HITL session state (private)
 │   │           └── _memory.py               # OneDrive-backed run snapshots + history.json (private; underscore-prefix → loader skips)
 │   │
 │   └── assets/                  # Shipped inside the wheel

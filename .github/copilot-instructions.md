@@ -25,7 +25,7 @@ All code lives under `src/hub_cowork/` and is packaged/installed as the `hub-cow
 | Settings UI actions | `host/ui_actions.py` | Ad-hoc server-side actions triggered by the Settings modal (e.g. `validate_speakers`) — runs in a worker thread, broadcasts progress over the WebSocket |
 | Tray icon | `host/tray_icon.py` | Raw Win32 ctypes tray with its own message-pump thread |
 | Shared tools | `tools/*.py` | `query_workiq`, `log_progress`, `get_task_status`, `get_hub_config`, `create_word_doc`, `resolve_speakers`, `send_email` |
-| Skill-local tools | `skills/<group>/tools/*.py` | Tools only available to one skill group (`engagement_context`, `create_meeting_invites`, RFP tools, `shelf_watch` tools) |
+| Skill-local tools | `skills/<group>/tools/*.py` | Tools only available to one skill group (`engagement_context`, `create_meeting_invites`, RFP tools, `shelf_watch_run`) |
 | Skills | `skills/**/*.yaml` | Declarative agents (`qa`, `task_status`, `agenda_repurpose`, `meeting_invites`, `rfp_evaluation`, `shelf_watch`, and the 4-phase `hub_agenda_creation` chain) |
 | Assets | `assets/` | `.env.defaults`, `chat_ui.html`, `hub_config.default.json`, icons — all shipped inside the wheel |
 
