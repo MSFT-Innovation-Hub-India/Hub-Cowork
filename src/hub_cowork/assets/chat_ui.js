@@ -2627,6 +2627,20 @@ function renderSkillsModal() {
 setDetailsCollapsed(true);
 connect();
 
+// Standard Windows behavior: double-click on the title bar toggles maximize.
+// We ignore double-clicks that land on interactive elements (buttons, the
+// app menu, the window controls) so they keep their normal behavior.
+(function wireTopbarDblClick() {
+  const topbar = document.querySelector("header.topbar");
+  if (!topbar) return;
+  topbar.addEventListener("dblclick", (e) => {
+    if (e.target.closest("button, input, a, .app-menu, .app-menu-popup, .win-controls, .svc-pill")) {
+      return;
+    }
+    winToggleMaximize();
+  });
+})();
+
 // Intercept clicks on file:// links anywhere in the UI and ask the agent
 // to open the file with the OS handler. pywebview won't navigate to
 // file:// URLs and even if it did the embedded webview can't launch

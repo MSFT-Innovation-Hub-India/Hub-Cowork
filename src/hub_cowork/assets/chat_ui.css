@@ -322,10 +322,20 @@
   .md table {
     border-collapse: collapse; margin: 8px 0; font-size: 12px;
     width: auto; max-width: 100%;
+    /* Wide reports (e.g. Shelf Watch — 11 columns) blow past the bubble.
+       Make the table its own horizontally-scrollable block so the chat
+       layout never has to widen to fit it. */
+    display: block;
+    overflow-x: auto;
   }
   .md th, .md td {
     border: 1px solid var(--border-strong); padding: 5px 9px;
     text-align: left; vertical-align: top;
+    /* Force long unbroken strings (URLs, model numbers) to wrap rather
+       than push the column to 600px. */
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    max-width: 280px;
   }
   .md th { background: #f1f3f5; font-weight: 600; }
   .md tr:nth-child(even) td { background: #fafbfc; }

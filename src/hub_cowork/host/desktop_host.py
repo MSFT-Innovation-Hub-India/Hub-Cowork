@@ -1093,6 +1093,12 @@ def main():
         on_top=False,
         hidden=True,
         frameless=True,
+        # Don't make the whole window content draggable. Without this,
+        # pywebview defaults easy_drag=True for frameless windows and any
+        # mouse-drag (including text selection in chat or logs) starts
+        # dragging the window. The CSS `-webkit-app-region: drag` on
+        # `header.topbar` already handles intentional title-bar drags.
+        easy_drag=False,
     )
     _window._agent_hidden = True
     _window.events.closing += _on_closing

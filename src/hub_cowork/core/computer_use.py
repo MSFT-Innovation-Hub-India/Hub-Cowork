@@ -83,6 +83,10 @@ class ComputerUseResult:
     blocked: bool = False                 # captcha / 403 / safety-check abort
     block_reason: str | None = None
     visited_urls: list[str] = field(default_factory=list)
+    # Skill-defined payload returned by the optional `dom_extractor`
+    # callback (see `run_computer_use_task`). Generic shape so each
+    # skill chooses what to capture (e.g. product-card hrefs).
+    extracted_data: Any = None
 
 
 def _validate_xy(x: int | None, y: int | None) -> tuple[int, int]:
@@ -109,6 +113,76 @@ def _is_allowed(host: str, allow_domains: list[str]) -> bool:
         if host == a or host.endswith("." + a):
             return True
     return False
+
+
+def _summarize_action(action: dict[str, Any]) -> str | None:
+    """Translate one CUA-emitted action into a short human phrase.
+
+    Returns None for actions that aren't worth surfacing on their own
+    (`screenshot`, `move`, `wait` < 1.5s).
+    """
+    t = action.get("type")
+    if t == "click":
+        btn = action.get("button", "left")
+        if btn == "back":
+            return "going back"
+        if btn == "forward":
+            return "going forward"
+        if btn == "wheel":
+            return "scrolling"
+        return "clicking"
+    if t == "double_click":
+        return "double-clicking"
+    if t == "type":
+        text = (action.get("text") or "").strip()
+        if not text:
+            return "typing"
+        if len(text) > 60:
+            text = text[:57] + "\u2026"
+        return f"typing \u201c{text}\u201d"
+    if t == "keypress":
+        keys = [str(k) for k in (action.get("keys") or [])]
+        if not keys:
+            return "pressing key"
+        joined = "+".join(keys)
+        return f"pressing {joined}"
+    if t == "scroll":
+        dy = int(action.get("scroll_y", 0) or 0)
+        if dy > 0:
+            return "scrolling down"
+        if dy < 0:
+            return "scrolling up"
+        return "scrolling"
+    if t == "drag":
+        return "dragging"
+    if t == "wait":
+        ms = int(action.get("ms", 0) or 0)
+        return f"waiting {ms} ms" if ms >= 1500 else None
+    if t in ("screenshot", "move"):
+        return None
+    return t  # unknown — at least name it
+
+
+def _summarize_action_batch(actions: list[dict[str, Any]], page_url: str) -> str:
+    """Build a one-line summary of the action batch about to run."""
+    phrases: list[str] = []
+    seen: set[str] = set()
+    for a in actions:
+        s = _summarize_action(a)
+        if not s:
+            continue
+        if s in seen:
+            continue
+        seen.add(s)
+        phrases.append(s)
+    if not phrases:
+        phrases = ["thinking"]
+    host = _host_of(page_url) or "browser"
+    # Strip leading "www."
+    if host.startswith("www."):
+        host = host[4:]
+    # Cap to 2 phrases so the line stays readable.
+    return f"{host} \u2014 {', '.join(phrases[:2])}"
 
 
 async def _handle_action(page: Any, action: dict[str, Any]) -> None:
@@ -215,8 +289,38 @@ async def _take_screenshot(page: Any, save_to: Path | None = None) -> str:
 
     Callers should `await _wait_for_render(page)` first when they need
     the page to be fully hydrated (post-navigation, post-click).
+
+    Resilience:
+      * Use a short explicit timeout so a hung SPA fails fast.
+      * On timeout, try once more with animations frozen — that defeats
+        infinite spinners / parallax that prevent Playwright from finding
+        a stable frame to capture.
+      * Final fallback: a 1×1 transparent PNG so the loop keeps running.
+        The model will see a blank image and typically scrolls or retries.
     """
-    png = await page.screenshot(full_page=False)
+    png: bytes | None = None
+    try:
+        png = await page.screenshot(full_page=False, timeout=12000)
+    except PWTimeout:
+        logger.warning("computer_use: screenshot timed out, retrying with animations disabled")
+        try:
+            png = await page.screenshot(
+                full_page=False, timeout=8000, animations="disabled",
+            )
+        except Exception as ex:
+            logger.warning("computer_use: screenshot retry failed (%s) — using blank fallback", ex)
+            png = None
+    except Exception as ex:
+        logger.warning("computer_use: screenshot raised %s — using blank fallback", ex)
+        png = None
+
+    if png is None:
+        # 1×1 transparent PNG so the CUA loop can continue and the model
+        # gets a chance to scroll / wait / recover instead of crashing.
+        png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+        )
+
     if save_to is not None:
         try:
             save_to.parent.mkdir(parents=True, exist_ok=True)
@@ -238,6 +342,7 @@ async def _run_async(
     timezone_id: str | None,
     screenshot_dir: Path | None,
     on_progress: Callable[[str, str], None] | None,
+    dom_extractor: Callable[[Any], Any] | None = None,
 ) -> ComputerUseResult:
     """Async core. Public entry point is the sync `run_computer_use_task`."""
     from playwright.async_api import async_playwright
@@ -258,7 +363,20 @@ async def _run_async(
     visited: list[str] = []
     screenshots: list[Path] = []
 
-    _progress("progress", f"Launching Chromium ({'headless' if headless else 'headed'})…")
+    # NOTE on progress kinds in this harness:
+    # ----------------------------------------
+    # The chat UI pins kind="progress" / "milestone" events as cards in
+    # the conversation, and routes everything else through a single
+    # transient "live status" shimmer line. A long browser session can
+    # easily emit 30+ per-step events (Step 1: thinking → Step 2:
+    # scrolling → …); pinning all of them as cards drowns the chat.
+    # So we use kind="step" for the routine per-iteration narrative
+    # (launch, navigate, action summaries, model reasoning) which only
+    # updates the shimmer, and reserve kind="progress" for terminal /
+    # exceptional events the user MUST see (safety check, bot challenge,
+    # max iterations reached). The full per-step trail is still
+    # available in the right-pane Progress tab and the persisted log.
+    _progress("step", f"Launching Chromium ({'headless' if headless else 'headed'})…")
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
@@ -301,7 +419,7 @@ async def _run_async(
                 pass
             page = await context.new_page()
 
-            _progress("progress", f"Navigating to {start_url}")
+            _progress("step", f"Navigating to {start_url}")
             await page.goto(start_url, wait_until="domcontentloaded")
             await _wait_for_render(page, timeout_ms=10000)
             visited.append(page.url)
@@ -334,6 +452,7 @@ async def _run_async(
             blocked = False
             block_reason: str | None = None
             final_text = ""
+            last_reasoning = ""
 
             for step in range(1, max_iterations + 1):
                 if not response.output:
@@ -384,6 +503,32 @@ async def _run_async(
                 call_id = call.call_id
                 actions = list(call.actions or [])
 
+                # Normalize action items to plain dicts up front so we can
+                # both summarize them for the user and execute them below.
+                norm_actions: list[dict[str, Any]] = []
+                for a in actions:
+                    if isinstance(a, dict):
+                        norm_actions.append(a)
+                    else:
+                        try:
+                            norm_actions.append(a.model_dump())   # pydantic v2
+                        except Exception:
+                            try:
+                                norm_actions.append(dict(a))      # best-effort
+                            except Exception:
+                                norm_actions.append({"type": "unknown"})
+
+                # If the model emitted new free-text reasoning this turn,
+                # surface it verbatim (truncated) so the user sees WHY the
+                # next click is happening, not just that one is.
+                if final_text and final_text != last_reasoning:
+                    snippet = final_text.strip().splitlines()[0]
+                    if snippet and len(snippet) > 4:
+                        if len(snippet) > 140:
+                            snippet = snippet[:137] + "\u2026"
+                        _progress("step", f"\U0001f9e0 {snippet}")
+                    last_reasoning = final_text
+
                 # Safety-check handling: auto-ack only the benign one
                 # (irrelevant_domain on a host that *is* on our allow list).
                 acknowledged: list[Any] = []
@@ -404,18 +549,11 @@ async def _run_async(
                         break
 
                 # Execute the action batch.
-                _progress("progress", f"Step {step}: executing {len(actions)} action(s)")
+                summary = _summarize_action_batch(norm_actions, page.url)
+                _progress("step", f"Step {step}: {summary}")
                 try:
                     await page.bring_to_front()
-                    for action in actions:
-                        # `actions` items are pydantic models on the new SDK
-                        # but plain dicts on older ones. Normalize.
-                        if not isinstance(action, dict):
-                            try:
-                                action = action.model_dump()  # pydantic v2
-                            except Exception:
-                                action = dict(action)         # best-effort
-
+                    for action in norm_actions:
                         await _handle_action(page, action)
 
                         # Domain allow-list guard (soft): if the latest
@@ -505,6 +643,17 @@ async def _run_async(
             if iterations >= max_iterations:
                 _progress("progress", f"Reached max iterations ({max_iterations})")
 
+            # Optional DOM extraction step — runs against the live page
+            # before the browser closes. Best-effort: failures don't
+            # invalidate the run. Skipped when the run was blocked, since
+            # the page is unlikely to hold useful data in that case.
+            extracted_data: Any = None
+            if dom_extractor and not blocked:
+                try:
+                    extracted_data = await dom_extractor(page)
+                except Exception as ex:
+                    logger.warning("computer_use: dom_extractor raised (%s)", ex)
+
             logger.info(
                 "computer_use: task complete iters=%d blocked=%s reason=%s final_text=%r",
                 iterations, blocked, block_reason, (final_text or "")[:500],
@@ -517,6 +666,7 @@ async def _run_async(
                 blocked=blocked,
                 block_reason=block_reason,
                 visited_urls=visited,
+                extracted_data=extracted_data,
             )
 
         finally:
@@ -539,6 +689,7 @@ def run_computer_use_task(
     timezone_id: str | None = None,
     screenshot_dir: Path | None = None,
     on_progress: Callable[[str, str], None] | None = None,
+    dom_extractor: Callable[[Any], Any] | None = None,
 ) -> ComputerUseResult:
     """
     Run a single computer-use task in a fresh Chromium session.
@@ -571,6 +722,14 @@ def run_computer_use_task(
                          step-NNN.png for debugging / audit.
         on_progress:     Optional `(kind, message)` callback, forwarded
                          to the executor's progress channel.
+        dom_extractor:   Optional async callable `(page) -> Any` that
+                         runs against the live Playwright Page right
+                         before the browser closes (skipped on blocked
+                         runs). Whatever it returns ends up on
+                         `ComputerUseResult.extracted_data`. Use this to
+                         capture skill-specific DOM details (anchor
+                         hrefs, structured listings, etc.) without
+                         re-launching a browser.
 
     Returns:
         `ComputerUseResult`. `blocked=True` when a safety check fired,
@@ -587,4 +746,5 @@ def run_computer_use_task(
         timezone_id=timezone_id,
         screenshot_dir=screenshot_dir,
         on_progress=on_progress,
+        dom_extractor=dom_extractor,
     ))

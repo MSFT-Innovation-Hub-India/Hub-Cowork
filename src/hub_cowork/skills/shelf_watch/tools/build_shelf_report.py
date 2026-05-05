@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Any
 
@@ -44,7 +45,9 @@ SCHEMA = {
                     "The `rows` array from compare_shelf_prices' payload. "
                     "Each row carries sku, retailer_label, price_inr, "
                     "mrp_inr, discount_pct, emi_from_inr, exchange_offer, "
-                    "in_stock, product_title, url, blocked, reason."
+                    "bank_offers, delivery_eta, seller, warranty, rating, "
+                    "rating_count, in_stock, product_title, url, "
+                    "category_attrs, blocked, reason."
                 ),
                 "items": {"type": "object"},
             },
@@ -100,6 +103,332 @@ def _fmt_delta(current: Any, previous: Any) -> str:
     return f"{arrow} ₹{abs(diff):,} ({pct:+.1f}%) vs ₹{int(previous):,}"
 
 
+def _fmt_rating(row: dict[str, Any]) -> str:
+    rating = row.get("rating")
+    count = row.get("rating_count")
+    if not isinstance(rating, (int, float)):
+        return "—"
+    base = f"{float(rating):.1f}★"
+    if isinstance(count, (int, float)) and count:
+        return f"{base} ({int(count):,})"
+    return base
+
+
+def _render_promotions(row: dict[str, Any]) -> str:
+    """Consolidated promotions cell — bank offers, exchange, EMI, discount."""
+    bullets: list[str] = []
+    bank_offers = row.get("bank_offers")
+    if isinstance(bank_offers, list):
+        for b in bank_offers:
+            s = str(b).strip()
+            if s:
+                bullets.append(s)
+    exchange = row.get("exchange_offer")
+    if exchange:
+        bullets.append(f"Exchange: {exchange}")
+    emi = row.get("emi_from_inr")
+    if isinstance(emi, (int, float)):
+        bullets.append(f"EMI from ₹{int(emi):,}/mo")
+    disc = row.get("discount_pct")
+    if isinstance(disc, (int, float)) and disc:
+        bullets.append(f"{int(disc)}% off MRP")
+    if not bullets:
+        return "—"
+    # Markdown table cells can't contain real newlines AND the chat-side
+    # renderer escapes HTML, so `<br>` shows as literal text. Use a
+    # bullet-separated inline list instead — still readable, no spillage.
+    return " • ".join(bullets)
+
+
+# Model-id extraction for verdict gating.
+#
+# The user's input "SKU" is a free-text description, not a real product
+# identifier — so a single SKU bucket can hold rows for entirely different
+# product variants once discovery returns multiple matches per retailer.
+# To avoid the apples-to-different-LG verdict bug, we only compute a price
+# verdict when ≥2 distinct retailers carry rows that share a comparable
+# model identity (e.g. UT80, QN90D, 128GB, FHV1207Z2B).
+#
+# The regex captures uppercase alphanumeric tokens 4-15 chars long that
+# contain BOTH at least one letter and at least one digit. That catches
+# real SKU codes like "65UA83506LA", "QN90D", "UT80", "FHV1207Z2B", and
+# also useful comparable specs like "128GB" / "256GB" for phone storage.
+_MODEL_ID_RE = re.compile(r"\b(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*\d)[A-Z0-9]{4,15}\b")
+
+# Tokens that match the regex but aren't actually identifying — exclude
+# them so they don't accidentally bind two unrelated variants together.
+_MODEL_ID_NOISE = {
+    "INCH", "INCHES", "USB3", "USB2", "HDMI2", "HDMI4",
+    "WIFI5", "WIFI6", "WIFI7", "5GHZ", "2GHZ", "4KHDR", "8KHDR",
+    "CM65", "CM55", "CM50", "CM43",  # cm-prefixed size noise from Indian PDPs
+}
+
+
+def _extract_model_ids(*titles: str) -> set[str]:
+    """Pull tokens from a product title that look like model identifiers.
+
+    Uppercase, length 4-15, mix of letters + digits. Filters obvious noise.
+    Returns the empty set when no titles are provided.
+    """
+    found: set[str] = set()
+    for t in titles:
+        if not t:
+            continue
+        for m in _MODEL_ID_RE.findall(t.upper()):
+            if m in _MODEL_ID_NOISE:
+                continue
+            found.add(m)
+    return found
+
+
+def _shared_model_id(a: set[str], b: set[str]) -> str | None:
+    """Return the longest model-id token shared between two sets.
+
+    Treats a 4+ char token as 'shared' if it appears as a substring of any
+    token in the other set (handles "QN90D" vs "55QN90DAVL" patterns).
+    Returns None when no overlap is found.
+    """
+    if not a or not b:
+        return None
+    candidates: list[str] = []
+    for x in a:
+        for y in b:
+            if x == y:
+                candidates.append(x)
+            elif len(x) >= 4 and x in y:
+                candidates.append(x)
+            elif len(y) >= 4 and y in x:
+                candidates.append(y)
+    return max(candidates, key=len) if candidates else None
+
+
+def _compute_verdict(rows: list[dict[str, Any]]) -> str | None:
+    """Best-price verdict line — gated on shared model identity.
+
+    Only emits a price comparison when at least two DIFFERENT retailers
+    carry rows whose titles share a model-id-like token. Otherwise emits a
+    short note that no like-for-like comparison is possible, so the user
+    isn't misled into thinking we compared two different LG models as if
+    they were the same product.
+    """
+    priced = [
+        r for r in rows
+        if not r.get("blocked") and isinstance(r.get("price_inr"), (int, float))
+    ]
+    if len(priced) < 2:
+        return None
+
+    # Per-row model-id sets, drawn from variant_title and product_title.
+    ids_by_row: list[set[str]] = [
+        _extract_model_ids(r.get("variant_title") or "", r.get("product_title") or "")
+        for r in priced
+    ]
+
+    # Union-find: link rows whose titles share a model-id token, so a chain
+    # of "A↔B, B↔C" pulls A and C into the same comparable set.
+    n = len(priced)
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[ri] = rj
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if _shared_model_id(ids_by_row[i], ids_by_row[j]):
+                union(i, j)
+
+    components: dict[int, list[int]] = {}
+    for i in range(n):
+        components.setdefault(find(i), []).append(i)
+
+    # Pick the component with the largest cross-retailer price spread.
+    best_group: list[int] | None = None
+    best_spread = -1
+    for idxs in components.values():
+        retailers = {priced[i].get("retailer") for i in idxs}
+        if len(retailers) < 2:
+            continue
+        prices = [int(priced[i]["price_inr"]) for i in idxs]
+        spread = max(prices) - min(prices)
+        if spread > best_spread:
+            best_spread = spread
+            best_group = idxs
+
+    if best_group is None:
+        # No like-for-like comparison possible across retailers.
+        return (
+            "_No shared model number across retailers — closest variants "
+            "shown for context, no price verdict._"
+        )
+
+    group_rows = [priced[i] for i in best_group]
+    group_rows.sort(key=lambda r: r["price_inr"])
+    cheap = group_rows[0]
+    expensive = group_rows[-1]
+    diff = int(expensive["price_inr"]) - int(cheap["price_inr"])
+    cheap_label = cheap.get("retailer_label") or cheap.get("retailer") or "?"
+    exp_label = expensive.get("retailer_label") or expensive.get("retailer") or "?"
+
+    matched_id = _shared_model_id(
+        _extract_model_ids(cheap.get("variant_title") or "", cheap.get("product_title") or ""),
+        _extract_model_ids(expensive.get("variant_title") or "", expensive.get("product_title") or ""),
+    )
+    suffix = f" (matched on `{matched_id}`)" if matched_id else ""
+
+    if diff <= 0:
+        return (
+            f"**Verdict:** Both retailers price this at "
+            f"₹{int(cheap['price_inr']):,}{suffix}."
+        )
+    pct = diff / expensive["price_inr"] * 100
+    return (
+        f"**Verdict:** **{cheap_label}** is ₹{diff:,} cheaper "
+        f"({pct:.1f}% off {exp_label}'s price) at "
+        f"₹{int(cheap['price_inr']):,} vs ₹{int(expensive['price_inr']):,}"
+        f"{suffix}."
+    )
+
+
+def _render_category_attrs_table(
+    rows: list[dict[str, Any]],
+) -> list[str]:
+    """Per-SKU sub-table of category-specific attributes, retailer-by-retailer.
+
+    Returns markdown lines (empty list if no attrs were captured).
+    """
+    # Union of all attribute keys across the SKU's retailers.
+    all_keys: list[str] = []
+    seen: set[str] = set()
+    for r in rows:
+        attrs = r.get("category_attrs")
+        if not isinstance(attrs, dict):
+            continue
+        for k in attrs.keys():
+            if k not in seen:
+                seen.add(k)
+                all_keys.append(k)
+    if not all_keys:
+        return []
+
+    lines: list[str] = []
+    lines.append("**Category attributes**")
+    lines.append("")
+    header = "| Retailer | " + " | ".join(all_keys) + " |"
+    sep = "|" + "---|" * (len(all_keys) + 1)
+    lines.append(header)
+    lines.append(sep)
+    for r in rows:
+        if r.get("blocked"):
+            continue
+        label = r.get("retailer_label") or r.get("retailer") or "?"
+        # Disambiguate when multiple variants share a retailer.
+        vt = (r.get("variant_title") or "").strip()
+        if vt:
+            short = vt if len(vt) <= 50 else vt[:47] + "…"
+            row_label = f"{label} — {short}"
+        else:
+            row_label = label
+        attrs = r.get("category_attrs") or {}
+        if not isinstance(attrs, dict):
+            attrs = {}
+        cells = []
+        for k in all_keys:
+            v = attrs.get(k)
+            if v in (None, "", [], {}):
+                cells.append("—")
+            elif isinstance(v, (list, tuple)):
+                cells.append(", ".join(str(x) for x in v))
+            elif isinstance(v, dict):
+                cells.append("; ".join(f"{kk}: {vv}" for kk, vv in v.items()))
+            else:
+                cells.append(str(v))
+        lines.append(f"| {row_label} | " + " | ".join(cells) + " |")
+    lines.append("")
+    return lines
+
+
+def _summarize_changes(
+    rows: list[dict[str, Any]],
+    previous_index: dict[str, dict[str, Any]],
+) -> list[str]:
+    """One-line change summaries vs the previous snapshot.
+
+    Counts a change as material when:
+      - price moved ≥1% OR ≥₹100 vs the previous run, OR
+      - in_stock flipped between True/False.
+
+    Returns a list of pre-formatted markdown bullet strings. Empty list
+    when nothing material moved (lets the caller render a "no changes"
+    line in the lede).
+    """
+    changes: list[str] = []
+    for r in rows:
+        if r.get("blocked"):
+            continue
+        sku_key = (
+            f"{(r.get('sku') or '').strip().lower()}||"
+            f"{(r.get('retailer') or '').strip().lower()}||"
+            f"{(r.get('variant_title') or '').strip().lower()}"
+        )
+        prev = previous_index.get(sku_key)
+        if not prev:
+            continue
+        label = r.get("retailer_label") or r.get("retailer") or "?"
+        # Use variant_title in the bullet when available — clearer than
+        # the user's free-text SKU when multiple variants share a bucket.
+        product_label = (r.get("variant_title") or r.get("product_title") or r.get("sku") or "(SKU)")
+        if isinstance(product_label, str) and len(product_label) > 70:
+            product_label = product_label[:67] + "…"
+
+        cur_price = r.get("price_inr")
+        prev_price = prev.get("price_inr")
+        if (
+            isinstance(cur_price, (int, float))
+            and isinstance(prev_price, (int, float))
+            and cur_price != prev_price
+        ):
+            diff = int(cur_price) - int(prev_price)
+            material = abs(diff) >= 100 or (
+                prev_price and abs(diff) / prev_price >= 0.01
+            )
+            if material:
+                arrow = "▲" if diff > 0 else "▼"
+                pct = (diff / prev_price * 100) if prev_price else 0
+                direction = "up" if diff > 0 else "down"
+                changes.append(
+                    f"- {arrow} **{label}** — {product_label}: price {direction} "
+                    f"₹{abs(int(diff)):,} ({pct:+.1f}%), now ₹{int(cur_price):,} "
+                    f"(was ₹{int(prev_price):,})"
+                )
+
+        cur_stock = r.get("in_stock")
+        prev_stock = prev.get("in_stock")
+        if (
+            isinstance(cur_stock, bool)
+            and isinstance(prev_stock, bool)
+            and cur_stock != prev_stock
+        ):
+            if cur_stock:
+                changes.append(
+                    f"- ✅ **{label}** — {product_label}: back in stock "
+                    "(was out of stock)"
+                )
+            else:
+                changes.append(
+                    f"- ⚠ **{label}** — {product_label}: now out of stock "
+                    "(was in stock)"
+                )
+    return changes
+
+
 def _build_markdown(
     rows: list[dict[str, Any]],
     title: str,
@@ -127,66 +456,89 @@ def _build_markdown(
         lines.append(f"_Comparing against prior run from {previous_timestamp}._")
     lines.append("")
 
+    # Diff-first lede: when we have a previous snapshot, lead with
+    # what changed. Watch agents earn their keep on deltas, not
+    # snapshots — so the reader sees the news before the table.
+    if previous_timestamp and previous_index:
+        change_lines = _summarize_changes(rows, previous_index)
+        lines.append("## What changed since the last run")
+        lines.append("")
+        if change_lines:
+            lines.extend(change_lines)
+        else:
+            lines.append(
+                "_No material changes detected — prices and stock held "
+                "steady across all captured rows._"
+            )
+        lines.append("")
+
     for sku in order:
+        sku_rows = by_sku[sku]
         lines.append(f"## {sku}")
         lines.append("")
+
+        # Verdict line first so the user sees the takeaway at a glance.
+        verdict = _compute_verdict(sku_rows)
+        if verdict:
+            lines.append(verdict)
+            lines.append("")
+
         lines.append(
-            "| Retailer | Price | MRP | Discount | EMI from | Exchange offer | In stock | vs Last Run |"
+            "| Retailer | Price | MRP | In stock | Promotions | Delivery | Rating | Seller | Warranty | vs Last Run |"
         )
         lines.append(
-            "|---|---|---|---|---|---|---|---|"
+            "|---|---|---|---|---|---|---|---|---|---|"
         )
-        cheapest_price: int | None = None
-        cheapest_retailer: str | None = None
-        for r in by_sku[sku]:
+        for r in sku_rows:
             label = r.get("retailer_label") or r.get("retailer") or "?"
+            # When a specific variant was scraped (multi-match path), show
+            # the variant title alongside the retailer name. The chat-side
+            # markdown renderer escapes HTML, so we can't use <br>/<sub> —
+            # use an em-dash separator with a smaller-feeling cue.
+            variant_title = (r.get("variant_title") or "").strip()
+            if variant_title:
+                vt_display = variant_title if len(variant_title) <= 70 else variant_title[:67] + "…"
+                retailer_cell = f"**{label}** — {vt_display}"
+            else:
+                retailer_cell = f"**{label}**"
             if r.get("blocked"):
                 lines.append(
-                    f"| {label} | ⚠ blocked ({r.get('reason') or 'unknown'}) | — | — | — | — | — | — |"
+                    f"| {retailer_cell} | ⚠ blocked ({r.get('reason') or 'unknown'}) | — | — | — | — | — | — | — | — |"
                 )
                 continue
             price = r.get("price_inr")
-            if isinstance(price, (int, float)):
-                if cheapest_price is None or price < cheapest_price:
-                    cheapest_price = int(price)
-                    cheapest_retailer = label
-            sku_key = f"{(r.get('sku') or '').strip().lower()}||{(r.get('retailer') or '').strip().lower()}"
+            sku_key = (
+                f"{(r.get('sku') or '').strip().lower()}||"
+                f"{(r.get('retailer') or '').strip().lower()}||"
+                f"{(r.get('variant_title') or '').strip().lower()}"
+            )
             prev = previous_index.get(sku_key) or {}
             delta_str = _fmt_delta(price, prev.get("price_inr")) if prev else "new"
             lines.append(
-                "| {label} | {price} | {mrp} | {disc} | {emi} | {exch} | {stock} | {delta} |".format(
-                    label=label,
+                "| {label} | {price} | {mrp} | {stock} | {promo} | {delivery} | {rating} | {seller} | {warranty} | {delta} |".format(
+                    label=retailer_cell,
                     price=_fmt_inr(price),
                     mrp=_fmt_inr(r.get("mrp_inr")),
-                    disc=_fmt_pct(r.get("discount_pct")),
-                    emi=_fmt_inr(r.get("emi_from_inr")),
-                    exch=_fmt_text(r.get("exchange_offer")),
                     stock=_fmt_text(r.get("in_stock")),
+                    promo=_render_promotions(r),
+                    delivery=_fmt_text(r.get("delivery_eta")),
+                    rating=_fmt_rating(r),
+                    seller=_fmt_text(r.get("seller")),
+                    warranty=_fmt_text(r.get("warranty")),
                     delta=delta_str,
                 )
             )
 
-        # Per-SKU verdict line.
-        successful = [r for r in by_sku[sku] if not r.get("blocked")]
         lines.append("")
-        if cheapest_retailer and len(successful) >= 2:
-            prices = [r.get("price_inr") for r in successful if isinstance(r.get("price_inr"), (int, float))]
-            if len(prices) >= 2:
-                gap = max(prices) - min(prices)
-                lines.append(
-                    f"**Verdict:** {cheapest_retailer} is cheapest at "
-                    f"{_fmt_inr(cheapest_price)} (₹{int(gap):,} below the "
-                    f"highest-priced competitor)."
-                )
-        elif cheapest_retailer:
-            lines.append(f"**Verdict:** Only {cheapest_retailer} returned a price for this SKU.")
-        else:
-            lines.append("**Verdict:** No clean prices captured — review screenshots.")
-        lines.append("")
+
+        # Category-specific attributes sub-table (Phase 3).
+        attr_lines = _render_category_attrs_table(sku_rows)
+        if attr_lines:
+            lines.extend(attr_lines)
 
         # Reference URLs for audit.
         url_lines = []
-        for r in by_sku[sku]:
+        for r in sku_rows:
             if r.get("url"):
                 url_lines.append(f"- {r.get('retailer_label') or r.get('retailer')}: {r['url']}")
         if url_lines:

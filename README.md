@@ -96,6 +96,7 @@ Hub Cowork is **skills-driven** — each capability is a declarative YAML file r
 | **Engagement Agenda Publish** (`engagement_agenda_publish`) | full | yes | Phase 4: create a Word document from the agenda and save to the configured output folder (OneDrive-synced) |
 | **Agenda Repurpose** (`agenda_repurpose`) | full | yes | Conversational: retrieve an existing agenda, collect new customer details (name, date, venue), produce a repurposed Word document |
 | **RFP Evaluation** (`rfp_evaluation`) | full | yes | Retrieve an RFP via WorkIQ, consult FoundryIQ + Fabric Data Agent, synthesise a Bid Intelligence Brief, save to OneDrive, share with the team |
+| **Shelf Watch** (`shelf_watch`) | full | yes | Three-turn computer-use skill: (1) confirm SKUs and retailers; (2) **discovery sweep** — gpt-5.4 + Playwright Chromium searches each retailer and a vision LLM triages the result page into up to N matching variants per retailer (default 3, see `shelf_watch_max_variants_per_retailer`); when the user has multiple matches the skill asks which variants to keep, otherwise it auto-proceeds; (3) **deep scrape** — for each confirmed variant, navigate to the PDP and a vision LLM extracts price, MRP, EMI, exchange offer, bank offers, delivery, seller, warranty, rating, and category-specific specs (auto-planned per SKU). Variant-aware "vs Last Run" deltas. Persists snapshot to OneDrive, renders a Word report with verdict line. HITL on scope and on variant selection. |
 | **Q&A** (`qa`) | mini | yes | Conversational Q&A about M365 data with per-thread history |
 | **Task Status** (`task_status`) | mini | no | Report current thread progress and active-thread count — responds instantly even while a task is running |
 | *(Router direct)* | mini | no | Greetings and small talk — handled by the router (`"none"` classification) without invoking a skill |
@@ -145,6 +146,119 @@ Hub Cowork is **skills-driven** — each capability is a declarative YAML file r
 **Hub configuration** — Phase 3 reads default session start time and speaker-by-topic mapping via `get_hub_config`. Users edit these from the kebab (⋮) menu → **Settings** in the topbar.
 
 **Engagement type detection** — Phase 1 classifies as `ADS`, `RAPID_PROTOTYPE`, `BUSINESS_ENVISIONING`, `SOLUTION_ENVISIONING`, `HACKATHON`, or `CONSULT`. Phase 3 applies type-specific agenda patterns.
+
+---
+
+### Shelf Watch — Two-Pass Computer-Use Skill (Azure OpenAI gpt-5.4 + Playwright)
+
+A different shape of skill: instead of querying a backend API, the agent **drives a real Chromium browser** to read public retail product pages and extract pricing intelligence. The pattern generalizes beyond retail — any time a workflow has to read information from a website that has no API (competitor sites, partner portals, regulatory filings, broker dashboards), the same harness applies.
+
+**Why two passes?** The Computer-Use model (`gpt-5.4`) is post-trained for action efficiency — it terminates the loop as soon as it believes the task is "done", which means in practice it skips most extraction work even when the data is on screen. We separate the concerns:
+
+1. **Pass 1 — Navigation (CUA)** drives the browser, scrolls the entire PDP, and produces a complete set of viewport screenshots. It is told NOT to extract anything; its only success criterion is "DONE" / "BLOCKED &lt;reason&gt;".
+2. **Pass 2 — Vision extraction (`gpt-5`)** receives all the captured screenshots in one shot and emits the strict JSON schema. No action loop, no early-exit incentive — pure structured reading.
+
+**Why a discovery turn?** A single user query like "LG 32-inch HD LED TV" can match many catalogue entries on each retailer. Letting the navigator pick "the best one" silently risks landing on the wrong product (a 55-inch instead of a 32-inch, a Smart instead of HD, an OLED instead of LED). The skill instead does a cheap **discovery sweep first** — it lists what each retailer has and asks the user which variants to deep-scrape. When every (SKU, retailer) has 0 or 1 match, the skill skips the ask and proceeds straight to scraping.
+
+```
+  User: "shelf watch on LG 32 inch HD LED TV"
+    │
+    ▼
+  Turn 1: shelf_watch  (conversational, HITL)
+    │  Confirm SKUs and retailers → [AWAITING_CONFIRMATION]
+    ▼
+  Turn 2: User says "yes" → DISCOVERY SWEEP
+    │
+    ├── discover_shelf_variants  (per SKU × retailer)
+    │     ├── PASS 1: CUA → homepage → search → scroll results page → DONE
+    │     │   (no PDP click; saves screenshots of the result grid)
+    │     │
+    │     └── PASS 2: vision LLM triage
+    │         ├─ apply RELEVANCE GATE (brand + size + capacity + model line)
+    │         └─ return up to N matching titles with `why_match` + `position`
+    │            (N defaults to `shelf_watch_max_variants_per_retailer`, default 3)
+    │
+    ├── If every (SKU, retailer) has 0 or 1 match → skip ask, jump to deep-scrape
+    │
+    └── Otherwise: present matches grouped by SKU → [AWAITING_CONFIRMATION]
+        ("Croma has 3 matches: 1. <title>, 2. <title>, 3. <title> — pick which to scrape")
+    │
+    ▼
+  Turn 3: User confirms / narrows → DEEP SCRAPE
+    │
+    ├── _plan_attributes(sku)   (CHAT_MODEL_SMALL — once per SKU, cached across variants)
+    │      → {category, attributes:[{key,label,hint}, …]}
+    │
+    ├── compare_shelf_prices  (per confirmed variant — {sku, retailer, variant_title})
+    │     │
+    │     ├── PASS 1: CUA → homepage → search → click the variant whose title matches
+    │     │   → scroll the entire PDP top-to-bottom → DONE
+    │     │
+    │     └── PASS 2: vision LLM extracts strict JSON
+    │         ├─ RELEVANCE GATE: verify product_title actually matches the requested
+    │         │  variant; emit {"blocked": true, "reason": "wrong_product: ..."}
+    │         │  if the navigator wandered
+    │         └─ otherwise emit price/MRP/EMI/exchange/bank_offers/delivery/seller/
+    │            warranty/rating/category_attrs → `_normalize_payload()` reconciles
+    │            loose keys (price/deal_price/selling_price → price_inr, ₹ strings →
+    │            ints, "Currently Unavailable" → in_stock=false, unknowns →
+    │            category_attrs blob)
+    │
+    ├── Persist snapshot to `<agenda_output_folder>/shelf-watch/runs/<ts>/`
+    │     plus rolling `history.json` (variant-aware key: sku||retailer||variant_title)
+    │
+    └── build_shelf_report  → markdown + Word doc, grouped by SKU. Each variant
+                              is its own row; retailer cell shows
+                              "Croma<br><sub>LG 80cm 32 HD LED TV</sub>". Verdict
+                              line picks the cheapest in-stock variant. "vs Last
+                              Run" delta is variant-aware.
+```
+
+**Why a generic harness?** [`core/computer_use.py`](src/hub_cowork/core/computer_use.py) owns Playwright, the Responses-API loop, screenshot capture, action execution, the domain allow-list, and safety-check handling. Skills supply only the natural-language `instructions`, the `start_url`, and the `allow_domains`. New computer-use skills (Best Buy comparison, FedEx tracking dashboard, FAA filings, anything) should never fork the harness — they write a new skill-local tool that builds different instructions and calls `run_computer_use_task(...)`. The two-pass extraction pattern (CUA navigates → vision LLM extracts) generalizes too: it lives in the skill, not the harness, so each skill chooses its own extraction schema.
+
+**Robustness measures baked into the harness:**
+
+| Concern | Fix |
+|---|---|
+| SPA pages screenshot before content hydrates | `wait_for_load_state("networkidle")` + 0.4s settle before every screenshot |
+| Hung SPA / infinite spinner causes Playwright `Page.screenshot` to time out | 12 s explicit timeout, then a retry with `animations="disabled"`, then a 1×1 blank fallback so the loop survives |
+| Small text (Indian retail prices) illegible after vision-token downsample | `device_scale_factor=2` — PNG bytes are 2880×1800 while click coords stay 1440×900 |
+| Browser permission popups (geolocation / notifications) occluding the page | Launch flags `--disable-notifications --deny-permission-prompts` + `permissions=[]` on the context |
+| Model navigates off the retailer's domain | Soft allow-list bounce — `go_back()` and let the model see the redirect |
+| Bot challenges / CAPTCHA pages | Detect `/captcha`, `/challenge`, Incapsula tokens — abort the run with `blocked: true` |
+| CUA model skips extraction even when data is on screen | **Two-pass split** — CUA navigates only; a dedicated vision LLM call extracts from the saved screenshots |
+| Navigator silently lands on the wrong size / brand / model | **Discovery+confirm turn** lists matches before scraping; **relevance gate** in the extractor returns `wrong_product` if the PDP doesn't match brand+size+capacity+model line |
+| Multiple catalogue matches per query collapsed to one arbitrary pick | **Variant fan-out** — discovery returns up to N variants per retailer; the skill asks the user which to keep, scraper emits one row per variant |
+| Opaque "Step N: executing 2 actions" progress | Action-summarizer turns each batch into `croma.com — typing "LG 32 inch", pressing Enter`; reasoning text passed through as `🧠 …` |
+| Model invents field names in returned JSON | Skill-side `_normalize_payload()` maps a synonym dict + coerces `₹69,900.00` strings to ints |
+| Per-SKU spec attributes (storage, chipset, capacity_kg, …) are category-dependent | `_plan_attributes(sku)` calls a small model once per SKU to derive the attribute set; the vision extractor pass receives those keys |
+
+**Hub-config keys** (all optional; documented under [Hub config (JSON)](#1-hub-config-json--application-data) below):
+
+| Key | Default | Effect |
+|---|---|---|
+| `shelf_watch_locale` | `en-IN` | Browser context locale — controls site region/language defaults |
+| `shelf_watch_timezone` | `Asia/Kolkata` | Browser context timezone — affects pricing pages with regional offers |
+| `shelf_watch_headless` | `false` | Hide the Chromium window. False is recommended; bot defenses challenge headless more aggressively |
+| `shelf_watch_retailers` | `{}` | Per-key merge over the shipped Croma + Reliance Digital registry. Each entry needs `label`, `start_url`, `allow_domains`; `search_hint` is optional |
+| `shelf_watch_max_variants_per_retailer` | `3` | Discovery cap — how many variants per retailer the triage LLM may surface for a single SKU. Capped at 10. Higher values give the user more choice but multiply scrape time linearly |
+
+Example — add Amazon India and tweak Croma's hint:
+
+```jsonc
+{
+  "shelf_watch_retailers": {
+    "croma": { "search_hint": "Use the magnifier icon at top-right." },
+    "amazon_in": {
+      "label": "Amazon India",
+      "start_url": "https://www.amazon.in/",
+      "allow_domains": ["amazon.in", "www.amazon.in", "m.media-amazon.com"]
+    }
+  }
+}
+```
+
+**Run memory** — each run writes `runs/run-<ts>.json` and updates `history.json` (capped at 20 runs, plus a `latest_per_pair` index keyed by `sku||retailer`). The next report's "vs Last Run" column reads from this index. Memory lives under `agenda_output_folder` when set (so it syncs to OneDrive automatically), otherwise `~/Documents/hub-cowork-agenda-docs/shelf-watch/`.
 
 ---
 
@@ -255,6 +369,7 @@ _load_env_files()        # 2. load_dotenv(.env, override=False)
 | Setting | Where | Read by |
 |---|---|---|
 | `hub_name`, `topic_catalog`, `default_session_start_time`, `agenda_output_folder`, `agenda_template_path` | Hub config (top level of `hub_config.json`) | Skills, via `get_hub_config` tool |
+| `shelf_watch_locale`, `shelf_watch_timezone`, `shelf_watch_headless`, `shelf_watch_retailers`, `shelf_watch_max_variants_per_retailer` | Hub config (top level of `hub_config.json`) | `shelf_watch` skill, read directly by `compare_shelf_prices.py` and `discover_shelf_variants.py` |
 | `AZURE_OPENAI_*`, `ACS_*`, `AZURE_TENANT_ID`, `AZ_REDIS_CACHE_ENDPOINT`, `REDIS_*`, `FOUNDRYIQ_*`, `FABRIC_*`, `RESOURCE_TENANT_ID`, `GRAPH_*`, `RFP_OUTPUT_FOLDER`, `RFP_SHARE_RECIPIENTS`, `WORKIQ_PATH` | Env vars (any of the 3 layers above) | Anywhere via `os.environ`, plus `get_hub_config` (see consistency note) |
 
 ### One consistent read path (consistency note)
@@ -403,7 +518,9 @@ After changing env values you need to restart so module-level reads (e.g. `ENDPO
 
 10. **Skill sub-agents** — Azure OpenAI Responses API. Tool definitions + instructions drive the autonomous tool-call loop. `previous_response_id` is stored on the `ConversationThread` so every thread has its own LLM context.
 
-11. **Tool execution layer** — `query_workiq`, `log_progress`, `get_task_status`, `get_hub_config`, `create_word_doc`, `resolve_speakers`, `send_email` are shared; `engagement_context` (agenda chain), `create_meeting_invites` (meeting invites), and `create_rfp_brief_doc` / `query_fabric_agent` / `search_foundryiq` / `share_onedrive_document` (RFP) are skill-local.
+11. **Tool execution layer** — `query_workiq`, `log_progress`, `get_task_status`, `get_hub_config`, `create_word_doc`, `resolve_speakers`, `send_email` are shared; `engagement_context` (agenda chain), `create_meeting_invites` (meeting invites), `create_rfp_brief_doc` / `query_fabric_agent` / `search_foundryiq` / `share_onedrive_document` (RFP), and `discover_shelf_variants` / `compare_shelf_prices` / `build_shelf_report` (shelf watch) are skill-local.
+
+12. **Computer-Use harness** ([`core/computer_use.py`](src/hub_cowork/core/computer_use.py)) — Generic Azure OpenAI gpt-5.4 + Playwright Chromium loop used by the `shelf_watch` skill. Owns the screenshot/action loop, key-mapping table, domain allow-list policing, and safety-check handling. Skills supply natural-language `instructions`, `start_url`, and `allow_domains` only.
 
 12. **LocalJsonThreadStore** — Debounced atomic JSON writes under `~/.hub-cowork/threads/{active,archive}/`. A `ThreadArchiveStore` Protocol is reserved for a future Cosmos DB backend.
 
@@ -434,6 +551,7 @@ hub-cowork/
 │   │   ├── hub_config.py            # Config loader — merges shipped defaults with ~/.hub-cowork/hub_config.json
 │   │   ├── app_paths.py             # Central app-home + branding constants ("Hub Cowork", ~/.hub-cowork/)
 │   │   ├── service_status.py        # Per-service connectivity monitor (passive envelope tracking + background probes)
+│   │   ├── computer_use.py          # Generic Azure OpenAI gpt-5.4 + Playwright Chromium harness (used by shelf_watch)
 │   │   └── outlook_helper.py        # ACS email + .ics invite builder
 │   │
 │   ├── host/                    # Runtime hosts (UI, console, remote bridge, tray)
@@ -465,13 +583,19 @@ hub-cowork/
 │   │   ├── meeting_invites/
 │   │   │   ├── meeting_invites.yaml
 │   │   │   └── tools/create_meeting_invites.py
-│   │   └── rfp_evaluation/
-│   │       ├── rfp_evaluation.yaml
+│   │   ├── rfp_evaluation/
+│   │   │   ├── rfp_evaluation.yaml
+│   │   │   └── tools/
+│   │   │       ├── create_rfp_brief_doc.py
+│   │   │       ├── query_fabric_agent.py
+│   │   │       ├── search_foundryiq.py
+│   │   │       └── share_onedrive_document.py
+│   │   └── shelf_watch/             # Computer-Use skill (gpt-5.4 + Playwright)
+│   │       ├── shelf_watch.yaml
 │   │       └── tools/
-│   │           ├── create_rfp_brief_doc.py
-│   │           ├── query_fabric_agent.py
-│   │           ├── search_foundryiq.py
-│   │           └── share_onedrive_document.py
+│   │           ├── compare_shelf_prices.py  # Per-(SKU, retailer) Computer-Use orchestration
+│   │           ├── build_shelf_report.py    # Markdown + Word report with vs-Last-Run delta
+│   │           └── _memory.py               # OneDrive-backed run snapshots + history.json (private; underscore-prefix → loader skips)
 │   │
 │   └── assets/                  # Shipped inside the wheel
 │       ├── .env.defaults            # Lowest-precedence env defaults

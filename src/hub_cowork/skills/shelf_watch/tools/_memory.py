@@ -56,10 +56,15 @@ def get_memory_dir() -> Path:
 
 
 def _key(row: dict[str, Any]) -> str:
-    """Stable identity for a (SKU, retailer) pair across runs."""
+    """Stable identity for a (SKU, retailer, variant) triple across runs.
+
+    Variants from the discovery phase are part of the identity — two
+    LG 32-inch TVs (HD vs Smart) on Croma should not collide.
+    """
     sku = (row.get("sku") or "").strip().lower()
     rk = (row.get("retailer") or "").strip().lower()
-    return f"{sku}||{rk}"
+    vt = (row.get("variant_title") or "").strip().lower()
+    return f"{sku}||{rk}||{vt}"
 
 
 def save_run(timestamp: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
