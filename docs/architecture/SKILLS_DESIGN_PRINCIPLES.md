@@ -131,13 +131,13 @@ When a tool returns `{"found": false, ...}`, the model decides whether to ask th
 
 ## 5. One skill per workflow, not one skill per phase
 
-Long workflows (e.g., the four-phase agenda creation) are **one skill** with a richer tool set, not four chained skills.
+Long workflows (such as the multi-phase agenda creation) are **one skill** with a richer tool set, not several chained skills.
 
 ### Why
 
-- Phased chaining was a workaround for instruction length. The real cause was procedural code in instructions. Once procedure moves to tools, the remaining domain knowledge fits in one skill of ~100–150 lines.
-- `previous_response_id` already carries phase-to-phase context — no need for `engagement_context` JSON-on-disk handoff between skills.
-- Removing chains removes `next_skill`, control-flow markers, the inter-phase context store, and the runtime state machine that ties them together.
+- Procedural code does not belong in instructions. Once procedure moves to tools, the remaining domain knowledge fits comfortably in a single `SKILL.md` of ~100–150 lines.
+- `previous_response_id` carries phase-to-phase context server-side. There is no need for an on-disk JSON handoff between phases.
+- A single skill has no `next_skill`, no control-flow markers, no inter-phase context store, and no runtime state machine to tie them together.
 
 ### The skill instructions describe phases, the tools execute them
 
@@ -232,7 +232,7 @@ Read the test: a senior solution engineer should be able to read `SKILL.md`, nod
 
 ## 7. Tool design rules
 
-1. **One tool, one job.** `publish_agenda_doc` does not also load context. `engagement_context` does not also build filenames.
+1. **One tool, one job.** `publish_agenda_doc` does not also load context. A context loader does not also build filenames.
 2. **Inputs are explicit.** The tool takes everything it needs as arguments. It does not reach into shared state.
 3. **Outputs are structured.** Return JSON with named fields (`{"found": bool, "path": str, "open_link": str, ...}`). Avoid prose-only returns when structure is possible.
 4. **Errors are facts.** Return `{"status": "error", "reason": "<machine-readable>"}`, not a user-facing apology. The model writes the apology.
@@ -329,7 +329,7 @@ The most common violations to catch up front:
 
 ## 9b. Preserved subsystems (do not refactor without explicit ask)
 
-The following work well today and are explicitly preserved through the rearchitecture. Every phase of [`REARCHITECTURE_PLAN.md`](REARCHITECTURE_PLAN.md) leaves them untouched.
+The following are core load-bearing components of the system. Do not refactor them unless the user explicitly asks.
 
 - **Authentication / credential management** — `core/auth_credential.py` with the WAM broker (`InteractiveBrowserBrokerCredential` parented to pywebview HWND, classic fallback), shared-credential pattern via `set_credential()`/`get_credential()`, `AuthenticationRecord` silent-refresh persistence, MSAL cache naming. Battle-tested across Graph / Azure OpenAI / FoundryIQ / Fabric / ACS scopes. (See §16.)
 - **Per-conversation concurrency model** — multiple chat threads run independently and in parallel:
@@ -338,23 +338,23 @@ The following work well today and are explicitly preserved through the rearchite
   - `core/conversation_thread.py` — the dataclass that carries id, status (`running` / `awaiting_user` / `complete` / `failed`), `previous_response_id`, `progress_log`, `code_log`, `hitl_correlation_tag`, `source` (local vs Teams).
   - `core/thread_store.py` — `LocalJsonThreadStore` with debounced atomic writes under `~/.hub-cowork/threads/{active,archive}/`. Threads survive restart and resume from `previous_response_id`.
   - `host/redis_bridge.py` — Teams remote-message inbox/outbox bridge with the per-Teams-user in-flight gate, classifier, and `#thread-xxxx` correlation. Orthogonal to skills.
-- **Desktop host + UI integration** — `host/desktop_host.py` (WebSocket on 18080, HTTP on 18081, pywebview window, tray wire-up) plus `assets/chat_ui.{html,js,css}`. The full WebSocket protocol (client→server: `create_thread`, `send_to_thread`, `cancel_thread`, `system_query`, …; server→client: `thread_started`, `thread_progress`, `thread_completed`, `thread_archived`, `service_status`, `auth_status`, …) and the request-id correlation scheme are frozen. The rearchitecture is **server-side only.**
+- **Desktop host + UI integration** — `host/desktop_host.py` (WebSocket on 18080, HTTP on 18081, pywebview window, tray wire-up) plus `assets/chat_ui.{html,js,css}`. The full WebSocket protocol (client→server: `create_thread`, `send_to_thread`, `cancel_thread`, `system_query`, …; server→client: `thread_started`, `thread_progress`, `thread_completed`, `thread_archived`, `service_status`, `auth_status`, …) and the request-id correlation scheme are frozen. Changes to the agent loop are **server-side only.**
 - **Per-skill model-tier routing** (`reasoning` vs `fast` with `reasoning_effort`) — a deliberate strength over Cowork's single-model approach (§18.3).
 - **Settings UI + env override mechanism** — `_env_overrides` in `~/.hub-cowork/hub_config.json`, applied in `__main__.py` before `agent_core` import, `restart` WS command for relaunch.
 - **Service-status broadcast** (`core/service_status.py`) — passive reachability tracking for `workiq` / `foundryiq` / `fabric_agent` / `redis_teams`, surfaced to the UI as `service_status` events.
 
-### Contract — where the new MCP layer plugs in without disturbing any of the above
+### Contract — where the MCP layer plugs in without disturbing any of the above
 
-The MCP migration (§11, §11A, Phase 7 of the plan) is a **drop-in dispatcher swap inside the agent loop**. It does not touch the layers above:
+The MCP layer (§11, §11A) is a **drop-in dispatcher inside the agent loop.** It does not touch the layers above:
 
-- `ExecutorPool` still hands a `(thread_id, user_input)` to `agent_core.run_skill_on_thread(...)`. Unchanged signature.
+- `ExecutorPool` still hands a `(thread_id, user_input)` to `agent_core.run_agent_on_thread(...)`. Unchanged signature.
 - `agent_core` still owns the Responses-API call, the `requires_action` loop, and the per-thread `previous_response_id` write-back. Unchanged.
-- The only thing that changes inside the loop is *how a tool call is fulfilled:* in-process `tool.handle(...)` becomes `mcp_pool.call(server, name, args, on_progress=...)`. The `on_progress` callback the pool receives is the same one already wired by `_ThreadWorker` — and it's still tagged via `current_thread_id` so events land in the right chat panel.
+- The only thing that changes inside the loop is *how a tool call is fulfilled:* `mcp_pool.call(server, name, args, on_progress=...)` dispatches into the warm subprocess. The `on_progress` callback the pool receives is the same one already wired by `_ThreadWorker` — and it's still tagged via `current_thread_id` so events land in the right chat panel.
 - Tool-emitted MCP `notifications/progress` are forwarded straight into that `on_progress`, so the UI's `thread_progress` stream is byte-for-byte the same as today.
 - `MCPClientPool` is **host-scoped, not thread-scoped.** One subprocess per server, multiplexed across all threads. A long-running agenda build in thread A and a fast Q&A in thread B share the same warm `workiq` server subprocess concurrently — the pool serializes calls per server only when the underlying MCP session requires it (typically not, since each call is a discrete request/response with a unique id).
 - Thread cancellation, archive/unarchive, and the `awaiting_user` HITL pattern continue to work as today: the loop exits, the thread state machine takes over, and the next user message resumes via `previous_response_id`. The pool sees nothing special — the next `pool.call(...)` simply happens whenever the model asks for it.
 
-In short: **conversation threading, UI integration, persistence, and the Teams bridge are below the agent loop. The MCP migration happens inside the loop. The seam is clean.**
+In short: **conversation threading, UI integration, persistence, and the Teams bridge are below the agent loop. The MCP dispatcher lives inside the loop. The seam is clean.**
 
 ---
 
@@ -576,7 +576,7 @@ src/hub_cowork/skills/                      # discovered recursively
 ├── qa/
 │   ├── skill.yaml
 │   └── SKILL.md
-├── engagement_agenda/                      # post-Phase-3 (Phase 5 cleanup)
+├── engagement_agenda/
 │   ├── skill.yaml
 │   ├── SKILL.md
 │   └── tools/
@@ -698,7 +698,7 @@ This is documented as a deliberate divergence in §18.1.
 ### 14.1 The canonical shape
 
 ```python
-def run_skill_on_thread(skill: Skill, user_input: str, thread: ConversationThread,
+def run_agent_on_thread(skill: Skill, user_input: str, thread: ConversationThread,
                         on_progress) -> str:
     client = _get_responses_client()
     # skill.tool_schemas is the union of every MCP server's tools/list result for
@@ -762,18 +762,6 @@ The "looks like a question" test is intentionally simple (e.g., "ends with `?`" 
 
 When the user's next message arrives on the same thread, we call the API again with `previous_response_id` pointing at the last response. The API resumes the workflow naturally.
 
-### 14.5 What used to be in `agent_core` that must be ripped out
-
-These exist today and must be removed during Phase 2 / Phase 4 of the rearchitecture:
-
-- Marker parsing (`[STOP_CHAIN]`, `[AWAITING_CONFIRMATION]`).
-- `next_skill` chaining.
-- The `active_session` / marker-stripping logic.
-- `thread.messages` accumulation outside `previous_response_id`.
-- The `run_agent_on_thread` vs `run_skill_on_thread` distinction (one function, one loop).
-
-See [`REARCHITECTURE_PLAN.md`](REARCHITECTURE_PLAN.md) Phase 2 and Phase 4.
-
 ---
 
 ## 15. Conversation state — `previous_response_id` is the only state
@@ -792,7 +780,7 @@ Just enough to resume:
 
 - ❌ A `messages` list mirroring the API's history.
 - ❌ Per-skill scratchpads.
-- ❌ Inter-phase JSON context files (`engagement_context/<customer>.json`).
+- ❌ Inter-phase JSON context files on disk (e.g., a `<workflow>/<customer>.json` handoff store).
 - ❌ Tool result caches keyed off the conversation.
 
 If the model needs to remember something from earlier in the conversation, it remembers because `previous_response_id` carries the full history server-side. We don't manage it.
@@ -809,7 +797,7 @@ A special pseudo-thread (`thread_id == "system"`) handles cross-task questions (
 
 ## 16. Auth and credential sharing
 
-**Do not touch this subsystem unless explicitly asked.** It is preserved verbatim through the rearchitecture (§9b).
+**Do not touch this subsystem unless explicitly asked.** It is preserved verbatim (§9b).
 
 ### 16.1 The model
 
@@ -951,4 +939,3 @@ Progress events flow through the WebSocket as `thread_progress` messages. The fu
 - [Anthropic knowledge-work-plugins](https://github.com/anthropics/knowledge-work-plugins) — original SKILL.md pattern.
 - [Anthropic skills repo](https://github.com/anthropics/skills) — general-purpose skills.
 - [Model Context Protocol spec](https://modelcontextprotocol.io/) and the [Python SDK](https://github.com/modelcontextprotocol/python-sdk) (`mcp` package, FastMCP).
-- [`docs/architecture/REARCHITECTURE_PLAN.md`](REARCHITECTURE_PLAN.md) — the staged plan to bring the existing codebase into compliance with this document.

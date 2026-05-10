@@ -90,7 +90,7 @@ Surface the extracted goals via `log_progress` ("Engagement Goals for &lt;custom
 
 ## Composing the agenda
 
-Call `get_hub_config` to fetch `default_session_start_time` and the `topic_catalog`. The catalog is your primary reference for session topic phrasing, descriptions, and speaker candidates. A legacy `speakers_by_topic` mapping may exist as a fallback only.
+Call `get_hub_config` to fetch `default_session_start_time` and the `topic_catalog`. The catalog is your primary reference for session topic phrasing, descriptions, and speaker candidates. An optional `speakers_by_topic` mapping may exist as a fallback only.
 
 ### General structure (Rule A)
 

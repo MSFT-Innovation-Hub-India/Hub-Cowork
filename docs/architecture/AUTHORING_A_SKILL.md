@@ -30,10 +30,8 @@ description: |
   Pack it with intent verbs and trigger phrases.
   Keywords: keyword1, keyword2, ...
 
-model: full              # "full" (reasoning model) or "mini" (fast model)
-                         # design-doc target name is `model_tier: reasoning|fast` —
-                         # both keys read the same env vars; rename pending Phase 5 cleanup.
-reasoning_effort: medium # only when model=full; one of low | medium | high
+model_tier: reasoning    # "reasoning" (full model) or "fast" (small model)
+reasoning_effort: medium # only when model_tier=reasoning; one of low | medium | high
 queued: true             # true = serialized on the conversation's worker thread (default)
                          # false = runs on the SYSTEM pseudo-thread immediately
 
@@ -172,7 +170,7 @@ if __name__ == "__main__":
 ### Tool naming conventions
 
 - Public tool: `tool_name.py` — picked up by `serve(...)` if listed.
-- Private helper: `_helper.py` (underscore prefix). The `serve(...)` loader and the legacy auto-discoverer skip these. Use them for internal modules a tool decomposes into.
+- Private helper: `_helper.py` (underscore prefix). The `serve(...)` loader skips these. Use them for internal modules a tool decomposes into.
 
 ---
 
@@ -205,7 +203,7 @@ If you find yourself wanting to chain skills with `next_skill`, the right answer
 - Split a tool further so the model has the right primitive to keep going in the same skill.
 - Write richer guidance in `SKILL.md` so the model orchestrates the phases itself.
 
-The `engagement_agenda` skill is the proof point — it used to be four chained skills with on-disk JSON handoff (`hub_agenda_creation/{briefing,goals,build,publish}.yaml` + `engagement_context.py`); it is now a single skill that the model orchestrates across turns. Total skill code shrunk; reliability and HITL behavior improved.
+The `engagement_agenda` skill is the canonical example: a multi-phase workflow (briefing-call discovery, notes analysis, agenda build, Word publication) that lives as one skill. The model orchestrates the phases across turns; `previous_response_id` carries phase-to-phase context; the deterministic work sits in tools.
 
 ---
 
@@ -215,7 +213,7 @@ The `engagement_agenda` skill is the proof point — it used to be four chained 
 python scripts/lint_skills.py
 ```
 
-Run after any skill edit. The lint blocks the banned legacy patterns and confirms each skill folder is well-formed:
+Run after any skill edit. The lint blocks the banned patterns and confirms each skill folder is well-formed:
 
 - `instructions:` field in `skill.yaml` → blocked
 - `next_skill:` → blocked

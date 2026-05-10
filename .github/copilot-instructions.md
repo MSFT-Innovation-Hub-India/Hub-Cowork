@@ -27,8 +27,6 @@ The non-negotiables (full rationale and runtime mechanics in the design doc):
 13. **Progress is `on_progress(kind, message)` only.** Tool returns are JSON for the model, not prose for the UI. `log_progress` is the model's microphone (§17).
 14. **Tools are MCP servers — stdio now, HTTP later.** Each skill owns a per-skill MCP server under its folder; cross-cutting tools live in shared servers under `src/hub_cowork/mcp_servers/`. The host's `MCPClientPool` spawns each server as a stdio subprocess on first use and keeps it warm for the host's lifetime — calls are multiplexed, never one-subprocess-per-call. Stdio MCP servers **cannot** be passed to the Azure OpenAI Responses API as native `mcp` tools (that mode only accepts remote HTTP URLs); they are registered as ordinary `type="function"` tools built from each server's `tools/list` advertisement, and the agent loop dispatches `requires_action` calls into the pool. Auth crosses the boundary via the shared on-disk MSAL cache; servers call `get_credential()` themselves. Future move to ACA is a transport swap (stdio → streamable HTTP) declared in `skill.yaml`; tools usually stay client-dispatched, with native Responses-API `mcp` registration as an opt-in per server (§8, §11, §11.4a, §11.7, §14.1, §18.5).
 
-When the **existing code** in this repo conflicts with these principles (chained `hub_agenda_creation` skills, marker parsing in `agent_core.py`, `instructions:` in YAML, `engagement_context` JSON store, `thread.messages`), the existing code is **the thing to fix**, not a pattern to follow. The migration is staged in [`docs/architecture/REARCHITECTURE_PLAN.md`](../docs/architecture/REARCHITECTURE_PLAN.md). Until each phase lands, both shapes coexist; new code goes in the new shape.
-
 Run the §9 checklist in `SKILLS_DESIGN_PRINCIPLES.md` before declaring any change "done."
 
 ### Pre-change reasoning gate (mandatory)
@@ -57,16 +55,16 @@ If any answer is "yes," **change the approach before writing any code.** State t
 
 ### Things that must NOT be touched in any redesign
 
-The following work today and are explicitly preserved across the rearchitecture. Do not refactor, replace, or "simplify" them unless the user asks:
+The following work today and are explicitly preserved. Do not refactor, replace, or "simplify" them unless the user asks:
 
 - **Authentication and credential management** — `core/auth_credential.py` (WAM broker via `InteractiveBrowserBrokerCredential` parented to the pywebview HWND, with classic `InteractiveBrowserCredential` fallback), the shared-credential pattern via `set_credential()` / `get_credential()`, the `AuthenticationRecord` persistence for silent token refresh, the per-cache MSAL token blob naming (`hub_cowork`), and the Settings-UI Sign-In flow. This is battle-tested and works correctly across Entra scopes for Graph, Azure OpenAI, FoundryIQ, Fabric, and ACS. (§16, §9b, §18.4.)
 - **Per-conversation concurrency model** — `core/thread_manager.py` (registry + `current_thread_id` ContextVar), `core/thread_executor.py` (`ExecutorPool`, one daemon worker per active thread, idle shutdown), `core/conversation_thread.py` (the dataclass with `previous_response_id`, status, `progress_log`, `code_log`, `hitl_correlation_tag`, `source`), and `core/thread_store.py` (`LocalJsonThreadStore` with debounced atomic writes under `~/.hub-cowork/threads/`). Multiple chat threads run independently and in parallel, each with its own Responses-API context.
-- **Desktop host and UI integration** — `host/desktop_host.py` (WebSocket on 18080, HTTP on 18081, pywebview window, tray wire-up), `assets/chat_ui.{html,js,css}`, the full WebSocket protocol (`create_thread`, `send_to_thread`, `cancel_thread`, `system_query`, `thread_progress`, `thread_completed`, `service_status`, `auth_status`, …), and the request-id correlation scheme. The rearchitecture is **server-side only.**
+- **Desktop host and UI integration** — `host/desktop_host.py` (WebSocket on 18080, HTTP on 18081, pywebview window, tray wire-up), `assets/chat_ui.{html,js,css}`, the full WebSocket protocol (`create_thread`, `send_to_thread`, `cancel_thread`, `system_query`, `thread_progress`, `thread_completed`, `service_status`, `auth_status`, …), and the request-id correlation scheme. Changes are **server-side only.**
 - **Teams / Redis remote-message bridge** — `host/redis_bridge.py` with the per-Teams-user in-flight gate, `classify_inbox` 3-way classifier, and `#thread-xxxx` correlation tags. Orthogonal to skills.
 - **Per-skill model-tier routing** (`reasoning` vs `fast`) — a deliberate strength over Cowork's single-model approach (§18.3); keep it.
 - **Settings UI + env override mechanism** — `_env_overrides` in `~/.hub-cowork/hub_config.json`, applied in `__main__.py` before `agent_core` import; `restart` WS command relaunches the process.
 
-**Where the new MCP layer plugs in:** the migration is a drop-in dispatcher swap *inside* the agent loop — `tool.handle(...)` becomes `mcp_pool.call(server, name, args, on_progress=...)`. `ExecutorPool`, `ThreadManager`, the WebSocket protocol, and the chat UI are below the loop and never see the change. The `MCPClientPool` is host-scoped (not thread-scoped) — one warm subprocess per server, multiplexed across every conversation thread. (§9b contract.)
+**Where the MCP layer plugs in:** tool execution dispatches via `mcp_pool.call(server, name, args, on_progress=...)` inside the agent loop. `ExecutorPool`, `ThreadManager`, the WebSocket protocol, and the chat UI sit below the loop and never see how a tool is dispatched. The `MCPClientPool` is host-scoped (not thread-scoped) — one warm subprocess per server, multiplexed across every conversation thread. (§9b contract.)
 
 ## Architecture
 
@@ -76,7 +74,7 @@ All code lives under `src/hub_cowork/` and is packaged/installed as the `hub-cow
 
 | Component | Module | Role |
 |---|---|---|
-| Agent core | `core/agent_core.py` | LLM router, inbox classifier, skill loader, tool loader, Azure OpenAI Responses API client, thread-scoped `run_agent_on_thread` / `run_skill_on_thread` |
+| Agent core | `core/agent_core.py` | LLM router, inbox classifier, skill loader, tool loader, Azure OpenAI Responses API client, thread-scoped `run_agent_on_thread` |
 | Credential factory | `core/auth_credential.py` | Builds the shared Entra credential — prefers WAM (`InteractiveBrowserBrokerCredential` from `azure-identity-broker`, parented to the pywebview HWND via `set_parent_window_handle`); falls back to classic `InteractiveBrowserCredential` when the broker / pymsalruntime is unavailable |
 | Conversation state | `core/conversation_thread.py` | `ConversationThread` dataclass — id, status, messages, progress_log, code_log, `previous_response_id`, `active_session`, `hitl_correlation_tag`, `source`, `external_user` |
 | Thread registry | `core/thread_manager.py` | Thread-safe singleton; observer pattern; exports `current_thread_id` ContextVar and `SYSTEM_THREAD_ID` constant |
@@ -93,8 +91,8 @@ All code lives under `src/hub_cowork/` and is packaged/installed as the `hub-cow
 | Settings UI actions | `host/ui_actions.py` | Ad-hoc server-side actions triggered by the Settings modal (e.g. `validate_speakers`) — runs in a worker thread, broadcasts progress over the WebSocket |
 | Tray icon | `host/tray_icon.py` | Raw Win32 ctypes tray with its own message-pump thread |
 | Shared tools | `tools/*.py` | `query_workiq`, `log_progress`, `get_task_status`, `get_hub_config`, `create_word_doc`, `resolve_speakers`, `send_email` |
-| Skill-local tools | `skills/<group>/tools/*.py` | Tools only available to one skill group (`engagement_context`, `create_meeting_invites`, RFP tools, `shelf_watch_run`) |
-| Skills | `skills/**/*.yaml` | Declarative agents (`qa`, `task_status`, `agenda_repurpose`, `meeting_invites`, `rfp_evaluation`, `shelf_watch`, and the 4-phase `hub_agenda_creation` chain) |
+| Skill-local tools | `skills/<group>/tools/*.py` | Tools only available to one skill group (`create_meeting_invites`, `shelf_watch_run`, RFP tools) |
+| Skills | `skills/**/*.yaml` | Declarative agents (`qa`, `task_status`, `agenda_repurpose`, `meeting_invites`, `rfp_evaluation`, `shelf_watch`, `engagement_agenda`) |
 | Assets | `assets/` | `.env.defaults`, `chat_ui.html`, `hub_config.default.json`, icons — all shipped inside the wheel |
 
 See [README.md](../README.md) for the full architecture diagram, skills, and protocol reference.
@@ -136,7 +134,7 @@ Env precedence (highest first): Settings UI `_env_overrides` in `~/.hub-cowork/h
 
 ## Adding Skills and Tools
 
-> Anything in this section that contradicts [`SKILLS_DESIGN_PRINCIPLES.md`](../docs/architecture/SKILLS_DESIGN_PRINCIPLES.md) is a description of **legacy** behavior present in the codebase today, not the target. New skills and tools must follow the design doc — see Part II §11 (MCP tool packaging), §11A (shared servers), and §12 (skill loading).
+Follow [`SKILLS_DESIGN_PRINCIPLES.md`](../docs/architecture/SKILLS_DESIGN_PRINCIPLES.md) Part II §11 (MCP tool packaging), §11A (shared servers), and §12 (skill loading). The recipe below is the practical short version.
 
 **New tool** (§11) — add it to an MCP server, never as a loose Python module:
 
@@ -170,19 +168,6 @@ Build them as a single skill with smarter tools. Phase-to-phase context flows vi
 ### Future: moving an MCP server to Azure Container Apps
 
 The MCP protocol is transport-agnostic. To move a server from local stdio to ACA-hosted streamable HTTP, change one entry in `skill.yaml` (`transport: streamable_http`, `url: ...`) and deploy the same server module behind a container. Skill code, tool code, and the agent loop are unchanged. (§11.7)
-
-### Legacy patterns still present in the tree (to be migrated)
-
-The following exist in the current codebase and will be removed during the migration in [`REARCHITECTURE_PLAN.md`](../docs/architecture/REARCHITECTURE_PLAN.md). Do not introduce new uses of them:
-
-- Loose Python tool modules under `src/hub_cowork/tools/` and `src/hub_cowork/skills/<skill>/tools/` exporting `SCHEMA: dict` + `handle()` — will be migrated into MCP servers.
-- `instructions:` field inside `*.yaml` skill files.
-- `next_skill:` chaining (`hub_agenda_creation/*`).
-- `conversational: true/false` flag.
-- `[AWAITING_CONFIRMATION]` / `[STOP_CHAIN]` markers in instructions.
-- `engagement_context` JSON-on-disk store for inter-phase handoff.
-- `thread.messages` history maintained outside `previous_response_id`.
-- `run_agent_on_thread` vs `run_skill_on_thread` distinction in `agent_core` (collapse to one function).
 
 ## Conventions
 

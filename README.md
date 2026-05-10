@@ -84,7 +84,7 @@ That's it. ~30 lines. Everything else (skill discovery, model-tier routing, conv
 ### What this buys us
 
 - **Adding a new workflow = drop in a folder.** A skill is `skill.yaml` + `SKILL.md` (+ optional `mcp_server/`). No registration, no manifest, no decorator.
-- **Workflows stay single-skill.** The 4-phase agenda chain that used to exist (`hub_agenda_creation/{briefing,goals,build,publish}.yaml` with `next_skill` chaining and on-disk `engagement_context` JSON handoffs) collapsed into ONE `engagement_agenda` skill once procedure moved into tools and `previous_response_id` carried phase-to-phase context.
+- **Workflows stay single-skill.** A multi-phase workflow like `engagement_agenda` is one skill with a richer tool set; `previous_response_id` carries phase-to-phase context across turns. There is no skill chaining, no `next_skill`, no on-disk inter-phase store.
 - **HITL is a conversation turn.** The model asks a question; the runtime sees a final text response with no pending tool calls and parks the thread at `awaiting_user`; the next message resumes via `previous_response_id`. No markers in instructions, no marker parsing in `agent_core`.
 - **Tool composition is the model's job.** Tools never call other tools. The model orchestrates.
 
@@ -302,7 +302,7 @@ Each skill is a folder under `src/hub_cowork/skills/` containing `skill.yaml` (c
 
 | Skill | Tier | Queued | What it does |
 |---|---|---|---|
-| **`engagement_agenda`** | reasoning | yes | Single-skill, multi-phase workflow. Finds briefing calls, confirms with user (HITL), reads meeting notes, classifies engagement type, builds a detailed agenda table, publishes to Word in OneDrive. Replaces the legacy 4-phase chain. |
+| **`engagement_agenda`** | reasoning | yes | Single-skill, multi-phase workflow. Finds briefing calls, confirms with user (HITL), reads meeting notes, classifies engagement type, builds a detailed agenda table, publishes to Word in OneDrive. |
 | **`agenda_repurpose`** | reasoning | yes | Retrieve an existing agenda, collect new customer details, produce a repurposed Word document. |
 | **`meeting_invites`** | reasoning | yes | From a published agenda, filter speakers, resolve their emails, send calendar invites via ACS. |
 | **`rfp_evaluation`** | reasoning | yes | Pull an RFP from email, parallel-fan-out to FoundryIQ (testimonials) and Fabric Data Agent (structured project history), synthesise a Bid Intelligence Brief, save to OneDrive, share with the team. |
@@ -478,8 +478,7 @@ hub-cowork/
 │   ├── ui-architecture.md
 │   └── architecture/
 │       ├── SKILLS_DESIGN_PRINCIPLES.md  ← authoritative spec (the 14 non-negotiables)
-│       ├── AUTHORING_A_SKILL.md         ← practical recipe for adding a skill
-│       └── REARCHITECTURE_PLAN.md       ← migration audit trail
+│       └── AUTHORING_A_SKILL.md         ← practical recipe for adding a skill
 │
 ├── scripts/
 │   ├── start.ps1     restart.ps1     stop.ps1
@@ -663,7 +662,7 @@ Tool functions return **JSON-serializable structured facts** with a `status`/`fo
 python scripts/lint_skills.py
 ```
 
-Run after any skill edit. The lint blocks the banned legacy patterns (`instructions:` in YAML, `[STOP_CHAIN]` / `[AWAITING_CONFIRMATION]` markers, `next_skill:`, `conversational:`) and confirms each skill folder is well-formed.
+Run after any skill edit. The lint blocks the banned patterns (`instructions:` in YAML, `[STOP_CHAIN]` / `[AWAITING_CONFIRMATION]` markers, `next_skill:`, `conversational:`) and confirms each skill folder is well-formed.
 
 ---
 
@@ -673,7 +672,6 @@ Run after any skill edit. The lint blocks the banned legacy patterns (`instructi
 |---|---|---|
 | [SKILLS_DESIGN_PRINCIPLES.md](docs/architecture/SKILLS_DESIGN_PRINCIPLES.md) | **Authoritative spec** | The 14 non-negotiables. The §9 PR checklist. Part I (the three layers), Part II (runtime mechanics), Part III (deliberate divergences from Cowork). Read this before authoring or modifying any skill, tool, or runtime change. |
 | [AUTHORING_A_SKILL.md](docs/architecture/AUTHORING_A_SKILL.md) | Practical guide | The recipe — `skill.yaml` shape, `SKILL.md` style guide, MCP tool packaging, HITL pattern, validation. |
-| [REARCHITECTURE_PLAN.md](docs/architecture/REARCHITECTURE_PLAN.md) | Migration audit trail | The phased plan that brought the codebase from the legacy chained-skills + loose-Python-tools shape to the current MCP + single-skill shape. Useful as historical context. |
 | [ui-architecture.md](docs/ui-architecture.md) | UI internals | Three-pane layout, breakpoint behaviour, in-chat step cards. |
 
 ### Reference
