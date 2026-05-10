@@ -196,11 +196,20 @@ function friendlyServiceLabel(key, svc) {
     unconfigured: "not configured",
     unknown: "status unknown",
   }[svc.status] || svc.status;
-  const detail = svc.detail ? ` \u2014 ${svc.detail}` : "";
   const when = svc.checked_at
     ? ` (checked ${new Date(svc.checked_at * 1000).toLocaleTimeString()})`
     : "";
-  return `${names[key] || key}: ${stateLabel}${detail}${when}`;
+  const name = names[key] || key;
+  // For red/grey pills we want the *reason* front-and-centre on hover so the
+  // user immediately sees "no Copilot license" / "access denied" / "Fabric
+  // capacity is paused" instead of a generic "unavailable". When the probe
+  // gave us a descriptive detail, lead with it; otherwise fall back to the
+  // short state label.
+  if ((svc.status === "down" || svc.status === "unconfigured") && svc.detail) {
+    return `${name}: ${svc.detail}${when}`;
+  }
+  const detail = svc.detail ? ` \u2014 ${svc.detail}` : "";
+  return `${name}: ${stateLabel}${detail}${when}`;
 }
 
 // ─────────────────────────────────────────────────────────────────

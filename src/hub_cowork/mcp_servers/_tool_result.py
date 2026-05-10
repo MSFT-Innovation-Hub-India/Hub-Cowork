@@ -42,7 +42,7 @@ from typing import Any
 _metric_logger = logging.getLogger("hub_se_agent.tool_metrics")
 
 
-def _report_service(tool: str, status: str, kind: str = "") -> None:
+def _report_service(tool: str, status: str, kind: str = "", message: str = "") -> None:
     """Forward this outcome to the service connectivity monitor.
 
     Imported lazily to avoid a circular import at module load (the monitor
@@ -51,7 +51,7 @@ def _report_service(tool: str, status: str, kind: str = "") -> None:
     """
     try:
         from hub_cowork.core.service_status import get_monitor
-        get_monitor().mark_from_envelope(tool, status, kind)
+        get_monitor().mark_from_envelope(tool, status, kind, message)
     except Exception:
         pass
 
@@ -92,7 +92,7 @@ def error(tool: str, kind: ErrorKind, message: str) -> str:
     _metric_logger.warning(
         "[tool_metric] tool=%s outcome=error kind=%s", tool, kind
     )
-    _report_service(tool, "error", kind)
+    _report_service(tool, "error", kind, message)
     return json.dumps(payload, ensure_ascii=False)
 
 

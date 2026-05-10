@@ -129,12 +129,19 @@ class _ServiceStatusMonitor:
         # of the last state transition.
         self._broadcast()
 
-    def mark_from_envelope(self, tool: str, envelope_status: str, kind: str = "") -> None:
+    def mark_from_envelope(
+        self,
+        tool: str,
+        envelope_status: str,
+        kind: str = "",
+        message: str = "",
+    ) -> None:
         """Record the outcome of a tool call.
 
         Empty / no-match results (envelope_status == "no_data") are treated
         as `ok` because the service is plainly reachable. `error` with
-        kind="config" becomes `unconfigured`; anything else becomes `down`.
+        kind="config" becomes `unconfigured`; `kind="auth"` becomes `down`
+        with an "access denied" detail; anything else becomes `down`.
         """
         service = _TOOL_TO_SERVICE.get(tool)
         if service is None:
@@ -143,10 +150,16 @@ class _ServiceStatusMonitor:
             self.mark(service, "ok", "")
             return
         if envelope_status == "error":
+            snippet = (message or "").strip().splitlines()[0][:160] if message else ""
             if kind == "config":
-                self.mark(service, "unconfigured", f"config missing ({kind})")
+                detail = snippet or "configuration missing"
+                self.mark(service, "unconfigured", detail)
+            elif kind == "auth":
+                detail = snippet or "access denied \u2014 your account may not have permission"
+                self.mark(service, "down", detail)
             else:
-                self.mark(service, "down", f"error: {kind or 'unknown'}")
+                detail = snippet or f"error: {kind or 'unknown'}"
+                self.mark(service, "down", detail)
 
     # ------------------------------------------------------------------
     # Active probes
@@ -240,12 +253,17 @@ def _is_signed_in() -> bool:
 def _probe_workiq() -> tuple[ServiceStatus, str]:
     """Check that the workiq CLI is installed and responds to --version.
 
-    We deliberately do NOT run a real query — that would hit M365 with a
-    dummy question and pollute telemetry. `--version` just verifies the
-    binary launches.
+    We deliberately do NOT run a real M365 query — that would hit Copilot
+    with a dummy question and pollute telemetry. `--version` verifies the
+    binary launches; if it exits non-zero or prints an auth/license error
+    to stderr, we translate that into a user-friendly tooltip detail
+    (e.g. "no Microsoft 365 Copilot license on this account",
+    "access denied"). Real access failures still get detected passively
+    when the first `query_workiq` call returns an error envelope — that
+    path carries the underlying message through to the tooltip too.
 
     On Windows the CLI ships as a .cmd shim (e.g. `workiq.cmd` from npm),
-    and `subprocess.run(["workiq", ...])` without shell=True does NOT honor
+    and subprocess.run(["workiq", ...]) without shell=True does NOT honor
     PATHEXT — CreateProcess only finds bare `workiq` if it has no extension.
     Use shutil.which() which DOES honor PATHEXT to resolve to the .cmd path.
     """
@@ -260,12 +278,23 @@ def _probe_workiq() -> tuple[ServiceStatus, str]:
     except FileNotFoundError:
         return "unconfigured", "WorkIQ CLI not on PATH (set WORKIQ_PATH)"
     except subprocess.TimeoutExpired:
-        return "down", "CLI --version timed out"
+        return "down", "WorkIQ CLI did not respond in time"
     except Exception as e:
-        return "down", f"CLI launch failed: {e}"
+        return "down", f"could not launch WorkIQ CLI: {e}"
+    stderr = (result.stderr or b"").decode("utf-8", errors="replace").strip()
+    stdout = (result.stdout or b"").decode("utf-8", errors="replace").strip()
+    blob = (stderr + " " + stdout).lower()
     if result.returncode != 0:
-        stderr = (result.stderr or b"").decode("utf-8", errors="replace").strip()
-        return "down", f"CLI exited rc={result.returncode}: {stderr[:80]}"
+        # Try to translate common WorkIQ failure modes into something the
+        # user can act on, so the tooltip is informative.
+        if "license" in blob or "not licensed" in blob or "entitlement" in blob:
+            return "down", "no Microsoft 365 Copilot license on this account"
+        if "unauthorized" in blob or "forbidden" in blob or "access denied" in blob:
+            return "down", "access denied \u2014 your account may not have permission to WorkIQ"
+        if "sign in" in blob or "login" in blob or "authentication" in blob:
+            return "down", "WorkIQ sign-in required"
+        snippet = (stderr or stdout).splitlines()[0][:120] if (stderr or stdout) else ""
+        return "down", f"WorkIQ CLI exited rc={result.returncode}" + (f": {snippet}" if snippet else "")
     return "ok", ""
 
 
@@ -316,20 +345,22 @@ def _probe_foundryiq() -> tuple[ServiceStatus, str]:
     if resp.status_code == 200:
         return "ok", ""
     if resp.status_code in (401, 403):
-        return "down", f"auth {resp.status_code}"
+        return "down", f"access denied (HTTP {resp.status_code}) — your account may not have permission to FoundryIQ"
     if resp.status_code == 404:
         return "unconfigured", f"knowledge base '{kb_name}' not found"
-    return "down", f"http {resp.status_code}"
+    return "down", f"FoundryIQ returned HTTP {resp.status_code}"
 
 
 def _probe_fabric_agent() -> tuple[ServiceStatus, str]:
-    """Probe Fabric Data Agent by acquiring a bearer token for its scope.
+    """Probe Fabric Data Agent by hitting its OpenAI-compatible endpoint.
 
-    Token acquisition exercises the end-to-end auth chain (InteractiveBrowser
-    credential → resource tenant → Fabric scope) without invoking the agent
-    itself (which would spin up a thread + run on the Fabric side and cost
-    real compute). A successful token implies the agent URL is reachable
-    via the same network, since Entra ID lives on Azure public endpoints.
+    Token acquisition alone is NOT sufficient: an Entra token mints fine
+    even when the Fabric capacity backing the data agent is paused, so the
+    UI would lie green while every real query failed. To detect a paused
+    capacity we make a lightweight `GET {endpoint}/assistants?limit=1`
+    against the assistants API — this requires the Fabric capacity to be
+    running. A paused capacity surfaces as 5xx (typically 503 with a
+    "capacity paused" body); a stopped/missing data agent surfaces as 404.
     """
     endpoint = (
         os.environ.get("FABRIC_DATA_AGENT_URL")
@@ -352,16 +383,39 @@ def _probe_fabric_agent() -> tuple[ServiceStatus, str]:
         # don't hold a second InteractiveBrowser instance open.
         from hub_cowork.skills.rfp_evaluation.mcp_server.tools.query_fabric_agent import _get_credential  # type: ignore
         cred = _get_credential(tenant_id, os.environ.get("FABRIC_AUTH_MODE") or "browser")
-        # Fabric uses the PowerBI (Fabric) resource scope.
         token = cred.get_token("https://api.fabric.microsoft.com/.default")
         if not token or not token.token:
             return "down", "token acquisition returned empty"
+        bearer = token.token
     except Exception as e:
         msg = str(e)[:120]
         if "unauthorized" in msg.lower() or "401" in msg or "403" in msg:
             return "down", f"auth: {msg}"
         return "down", f"token error: {msg}"
-    return "ok", ""
+
+    api_version = os.environ.get("FABRIC_API_VERSION") or "2024-05-01-preview"
+    url = f"{endpoint.rstrip('/')}/assistants?api-version={api_version}&limit=1"
+    try:
+        import requests
+        resp = requests.get(
+            url,
+            headers={"Authorization": f"Bearer {bearer}"},
+            timeout=_PROBE_TIMEOUT,
+        )
+    except Exception as e:
+        return "down", f"network: {e}"
+    if resp.status_code == 200:
+        return "ok", ""
+    body = (resp.text or "")[:200].lower()
+    if resp.status_code in (401, 403):
+        return "down", f"access denied (HTTP {resp.status_code}) — your account may not have permission to the Fabric Data Agent"
+    if resp.status_code == 404:
+        return "unconfigured", "data agent not found at this URL"
+    if "capacity" in body and ("paus" in body or "suspend" in body or "not running" in body):
+        return "down", "Fabric capacity is paused"
+    if resp.status_code in (503, 429):
+        return "down", f"Fabric unavailable (HTTP {resp.status_code}) — capacity may be paused"
+    return "down", f"Fabric returned HTTP {resp.status_code}"
 
 
 _PROBES: dict[ServiceName, Callable[[], tuple[ServiceStatus, str]]] = {
