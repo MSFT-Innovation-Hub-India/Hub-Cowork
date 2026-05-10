@@ -100,6 +100,12 @@ Everything above resolves to two clouds and one identity:
 - **Azure** — Azure OpenAI (Responses API + Computer-Use), FoundryIQ, Fabric Data Agent (Assistants API), ACS, Azure Blob Storage, Azure Managed Redis, Azure Bot Service, Azure Container Apps.
 - **One Microsoft Entra identity** signs into both. No second OAuth dance, no per-tool token store, no token-routing gateway.
 
+### Watch it in action
+
+[![Hub Cowork walkthrough](https://img.youtube.com/vi/bXJ6soe6jmQ/maxresdefault.jpg)](https://youtu.be/bXJ6soe6jmQ)
+
+A short video walkthrough of Hub Cowork — click the thumbnail to play on YouTube.
+
 ---
 
 ## Why it exists — the design pattern
