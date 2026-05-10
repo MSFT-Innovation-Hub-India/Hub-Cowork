@@ -9,6 +9,7 @@
 ## Table of contents
 
 - [What it does](#what-it-does)
+- [Solution architecture](#solution-architecture)
 - [Why it exists — the design pattern](#why-it-exists--the-design-pattern)
 - [The three layers](#the-three-layers)
 - [Runtime architecture](#runtime-architecture)
@@ -42,6 +43,58 @@ Hub Cowork is the daily driver of a Microsoft Innovation Hub Solution Engineer. 
 - Reports **task status** instantly — even while a long-running task is in flight.
 
 Everything runs on the user's laptop, under the user's Entra identity, with one sign-in.
+
+---
+
+## Solution architecture
+
+![Hub Cowork solution architecture](docs/sol_architecture.png)
+
+The diagram shows every moving piece in one frame — the desktop app on the left, the user's identity in the middle, and the Azure / Microsoft 365 services the agent reaches into on the right. The narration below walks the diagram in the order data flows through it.
+
+### The desktop app
+
+Hub Cowork ships as a **single-process Windows desktop application** (`python -m hub_cowork`, packaged as `pythonw.exe` for production so there is no console window). The UI is a [pywebview](https://pywebview.flowrl.com/) window hosting an embedded **Microsoft Edge WebView2** control that renders the chat UI (a single-file vanilla HTML/CSS/JS app under `src/hub_cowork/assets/chat_ui.html`). UI ↔ backend traffic is a local WebSocket on `ws://localhost:18080`; a Win32 system tray (raw ctypes) keeps the app reachable when the window is minimised. From the user's perspective it is one app to launch, one window to look at, one tray icon to right-click.
+
+### Identity — one Microsoft Entra sign-in for everything
+
+The user signs in **once**, via the Settings UI, against **Microsoft Entra ID**. The credential is built by `core/auth_credential.py`, which prefers the **WAM broker** (`InteractiveBrowserBrokerCredential` from `azure-identity-broker`) parented to the WebView2 HWND so the account picker is modal to our window; it falls back to classic `InteractiveBrowserCredential` when the broker is unavailable. The resulting MSAL token cache is persisted to `~/.hub-cowork/` and is **shared across the host process and every MCP server subprocess**. Tools never receive tokens as arguments; they call `get_credential()` themselves and the on-disk cache lets the subprocess silently mint scope-specific tokens (Graph, Azure OpenAI, FoundryIQ, Fabric, ACS, Teams Bot, …) from the same refresh token the host wrote at sign-in. **One identity, one sign-in, every service.**
+
+### The agent loop — Azure OpenAI Responses API as orchestrator
+
+The primary agent is the **Azure OpenAI Responses API**, called from the Hub Cowork desktop app. The desktop process runs the canonical Responses-API tool-execution loop (§14.1 of [`SKILLS_DESIGN_PRINCIPLES.md`](docs/architecture/SKILLS_DESIGN_PRINCIPLES.md)) — it sends the skill's `SKILL.md` as instructions and the skill's tool catalog, then handles `requires_action` events by dispatching tool calls and submitting their outputs back to the API. The model decides *what* to do; the desktop is just the bridge.
+
+**Tools are MCP servers.** A host-scoped `MCPClientPool` lazy-spawns each MCP server as a **stdio subprocess** on first use (per-skill servers under `src/hub_cowork/skills/<skill>/mcp_server/`, shared servers under `src/hub_cowork/mcp_servers/`) and keeps them warm for the host's lifetime. Calls are multiplexed across all conversation threads — never one-subprocess-per-call.
+
+Because stdio MCP servers run on the user's machine and are unreachable from Azure, they cannot be passed to the Responses API as native `mcp` tools (that mode only accepts remote HTTP URLs). Instead, at skill-start the host calls MCP `tools/list` on every server the skill connects to and registers each tool with the Responses API as an ordinary **`type="function"` function call**. When the model emits a tool call, the agent loop dispatches it through the pool into the right warm subprocess and submits the JSON result back. The model never knows MCP is on the wire — from its perspective everything is a function call.
+
+**Cloud-hosted MCP servers, when present, can be invoked directly by the Responses API** (declared in `skill.yaml` as `transport: streamable_http` with a URL, registered as `{type: "mcp", server_url: ...}`); the model server then makes the call cloud-to-cloud and we never see the bytes. **In the current scope of the agent app every tool call is locally executed** — no MCP server is registered as a native Responses-API `mcp` tool yet. The plumbing for the swap is in place (§11.4a, §11.7); flipping a server is a one-line change in `skill.yaml`.
+
+### What each tool reaches into
+
+- **WorkIQ CLI (`workiq.exe`).** A large fraction of the M365-facing tool calls go through the **Microsoft WorkIQ command-line binary** — a single call into the WorkIQ intelligence layer that spans **Microsoft 365 Copilot's view of Teams, Outlook, SharePoint, OneDrive and the Microsoft Graph**. One call, one identity, one answer that already joins across the silos. The local MCP `workiq` server wraps this binary; tools like `query_workiq` and `resolve_speakers` are thin shells over it.
+- **FoundryIQ.** Reached via the **MCP endpoints FoundryIQ exposes**. Today the `search_foundryiq` tool runs in a local MCP server that *forwards* the call to the cloud MCP endpoint — a redundant local-MCP → cloud-MCP hop that exists only because we still client-dispatch every tool. **In the next version of the agent app this call will be made entirely Azure-executed** by registering FoundryIQ's MCP server natively with the Responses API, removing our local proxy hop.
+- **Fabric Data Agent.** Exposes an **Azure OpenAI Assistants API** endpoint backed by a Microsoft Fabric Data Agent over the Lakehouse with structured project history. The `query_fabric_agent` tool is an Assistants-API client — it creates a thread, posts the question, polls for the run, and returns the structured answer.
+- **Azure Communication Services (ACS).** Used by the **`send_email` / meeting-invite tool** to deliver `.ics` calendar invitations to the speakers on a published Innovation Hub agenda. ACS handles the SMTP-layer sending under our verified sender domain.
+- **Azure Blob Storage.** Holds the corpus of **case studies and customer testimonial PDF documents** that FoundryIQ indexes directly. The agent never reads blobs itself — it queries the FoundryIQ index, which already has the documents ingested.
+
+### Remote access via Microsoft Teams
+
+The user does not have to be in front of their laptop to drive the agent. **Azure Managed Redis** holds the inbound and outbound user-message streams (`{ns}:inbox:{email}`, `{ns}:outbox:{email}`, plus a presence key with TTL heartbeat). It is the **integration channel between the agent app and any client surface that Azure Bot Service supports** — today that means the **Microsoft Teams app**, but the same channel works for other Bot-Service-backed clients without changing the agent.
+
+The Teams side is an **Azure Bot Service app + a Microsoft Teams app manifest** wired to a small relay (`workiq-agent-remote-client`) hosted in **Azure Container Apps**. The relay translates Teams activities into Redis inbox writes and reads outbox messages back into Teams replies, with `#thread-xxxx` correlation tags so HITL follow-ups route to the right conversation. The desktop app's `host/redis_bridge.py` polls the inbox, classifies each message (`new` / `existing` / `system`), enforces a per-Teams-user in-flight gate for new threads, and writes outbox replies. **Net effect: a long-running task can be kicked off from Teams on the train, run on the user's machine, and reply back to Teams — the user does not need to be at their computer.**
+
+### Microsoft Foundry
+
+**Microsoft Foundry is not used as an agent platform here.** Its only role in the architecture today is **hosting the Azure OpenAI Responses API** that drives the agent loop. We deliberately keep orchestration in our process so we can do per-skill model-tier routing (§18.3), per-skill tool scoping (§18.2), and HITL as a thread-status flag rather than a Foundry-managed state.
+
+### Two clouds, one identity
+
+Everything above resolves to two clouds and one identity:
+
+- **Microsoft 365** — reached via WorkIQ CLI (Teams, Outlook, SharePoint, OneDrive, Graph) and via direct Graph calls for things like calendar invite delivery confirmation.
+- **Azure** — Azure OpenAI (Responses API + Computer-Use), FoundryIQ, Fabric Data Agent (Assistants API), ACS, Azure Blob Storage, Azure Managed Redis, Azure Bot Service, Azure Container Apps.
+- **One Microsoft Entra identity** signs into both. No second OAuth dance, no per-tool token store, no token-routing gateway.
 
 ---
 
