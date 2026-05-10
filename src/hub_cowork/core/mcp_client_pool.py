@@ -177,11 +177,22 @@ class MCPClientPool:
 
     async def _ensure_started(self, h: _ServerHandle) -> None:
         if h.owner_task is not None:
-            assert h.ready is not None
-            await h.ready.wait()
-            if h.start_error is not None:
-                raise h.start_error
-            return
+            if h.owner_task.done():
+                logger.warning(
+                    "[mcp-pool] server '%s' owner task is dead — respawning",
+                    h.name,
+                )
+                h.owner_task = None
+                h.ready = None
+                h.start_error = None
+                h.queue = None
+                h.tools = []
+            else:
+                assert h.ready is not None
+                await h.ready.wait()
+                if h.start_error is not None:
+                    raise h.start_error
+                return
         h.queue = asyncio.Queue()
         h.ready = asyncio.Event()
         h.owner_task = asyncio.create_task(

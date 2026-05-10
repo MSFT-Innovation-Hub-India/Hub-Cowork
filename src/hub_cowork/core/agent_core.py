@@ -343,7 +343,20 @@ class Skill:
                  *, skill_folder: str | None = None):
         self.name: str = data["name"]
         self.description: str = data["description"].strip()
-        self.model_tier: str = data.get("model", "mini")  # "full" or "mini"
+        # Model tier: "reasoning" (CHAT_MODEL) or "fast" (CHAT_MODEL_SMALL).
+        # Accept the design-doc target field name `model_tier:` first;
+        # fall back to legacy `model: full|mini`.
+        _raw_tier = data.get("model_tier") or data.get("model") or "fast"
+        _tier_map = {
+            "reasoning": "reasoning", "fast": "fast",
+            "full": "reasoning", "mini": "fast",
+        }
+        if _raw_tier not in _tier_map:
+            raise ValueError(
+                f"Skill '{self.name}': model_tier must be 'reasoning' or 'fast' "
+                f"(got {_raw_tier!r})."
+            )
+        self.model_tier: str = _tier_map[_raw_tier]
         self.queued: bool = data.get("queued", True)  # queue business tasks by default
 
         # Tool wiring — MCP-based per SKILLS_DESIGN_PRINCIPLES.md §11.
@@ -402,7 +415,7 @@ class Skill:
 
     @property
     def model(self) -> str:
-        return CHAT_MODEL if self.model_tier == "full" else CHAT_MODEL_SMALL
+        return CHAT_MODEL if self.model_tier == "reasoning" else CHAT_MODEL_SMALL
 
     @property
     def tools(self) -> list[dict]:
@@ -926,14 +939,7 @@ def _run_skill(skill: "Skill", thread, user_input: str,
     # Persist the latest response id for future follow-ups.
     tm.set_previous_response_id(thread.id, response.id)
 
-    # Transitional courtesy: strip legacy control-flow markers from the
-    # *displayed* text so users don't see "[AWAITING_CONFIRMATION]" tokens
-    # while we migrate the older SKILL.md prose. The runtime no longer
-    # branches on these markers.
-    persisted_text = final_text or ""
-    for _marker in ("[AWAITING_CONFIRMATION]", "[STOP_CHAIN]"):
-        persisted_text = persisted_text.replace(_marker, "")
-    persisted_text = persisted_text.strip()
+    persisted_text = (final_text or "").strip()
 
     # UI side channel only — never read back as LLM input.
     if persisted_text:
@@ -988,13 +994,28 @@ def _run_none_skill(user_input: str) -> str:
     return reply or "Hey! How can I help you today?"
 
 
-def run_skill_on_thread(thread, skill_name: str, user_input: str,
-                        on_progress=None, is_cancelled=None) -> str:
-    """Run a specific skill on a ConversationThread. Updates thread state
-    (skill_name, status, messages, active_session, previous_response_id)
-    through the ThreadManager."""
+def run_agent_on_thread(thread, user_input: str, on_progress=None,
+                        is_cancelled=None, *, skill_name: str | None = None) -> str:
+    """Run a turn on a `ConversationThread`.
+
+    If `skill_name` is provided, run that skill directly. Otherwise:
+      - If the thread already has a pinned skill, continue with it.
+      - Else route the user_input to a skill (or "none" for small talk).
+
+    Updates thread state (skill_name, status, messages, active_session,
+    previous_response_id) through the ThreadManager.
+    """
     from hub_cowork.core.thread_manager import get_manager
     tm = get_manager()
+
+    if skill_name is None:
+        if thread.skill_name:
+            skill_name = thread.skill_name
+            logger.info("[%s] Continuing with pinned skill: %s", thread.id, skill_name)
+        else:
+            skill_name = _route(user_input)
+            if skill_name != "none":
+                tm.set_skill(thread.id, skill_name)
 
     if skill_name == "none":
         logger.info("[%s] Handling as small talk — direct LLM reply", thread.id)
@@ -1022,27 +1043,6 @@ def run_skill_on_thread(thread, skill_name: str, user_input: str,
                       is_cancelled=is_cancelled)
 
 
-def run_agent_on_thread(thread, user_input: str, on_progress=None,
-                        is_cancelled=None) -> str:
-    """Route (if the thread doesn't yet have a skill) and run on the thread.
-
-    After the first message of a thread, the skill is fixed for that thread
-    and subsequent messages skip routing.
-    """
-    from hub_cowork.core.thread_manager import get_manager
-    tm = get_manager()
-
-    if thread.skill_name:
-        skill_name = thread.skill_name
-        logger.info("[%s] Continuing with pinned skill: %s", thread.id, skill_name)
-    else:
-        skill_name = _route(user_input)
-        if skill_name != "none":
-            tm.set_skill(thread.id, skill_name)
-    return run_skill_on_thread(thread, skill_name, user_input, on_progress,
-                               is_cancelled=is_cancelled)
-
-
 # ---------------------------------------------------------------------------
 # Legacy entry points — kept as thin wrappers for the (few) callers that
 # haven't moved to the thread-scoped API yet (e.g. agent.py REPL).
@@ -1055,7 +1055,8 @@ def run_skill(skill_name: str, user_input: str, on_progress=None) -> str:
     from hub_cowork.core.thread_manager import get_manager
     tm = get_manager()
     thread = tm.create(title=user_input[:60] or "Legacy call", source="ui")
-    return run_skill_on_thread(thread, skill_name, user_input, on_progress)
+    return run_agent_on_thread(thread, user_input, on_progress,
+                               skill_name=skill_name)
 
 
 def run_agent(user_input: str, on_progress=None) -> str:

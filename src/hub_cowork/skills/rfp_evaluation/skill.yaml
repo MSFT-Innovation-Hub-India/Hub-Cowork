@@ -2,7 +2,7 @@ name: rfp_evaluation
 description: 'Evaluate an RFP and prepare a Bid Intelligence Brief. Keywords: RFP, request for proposal, bid, evaluate RFP, new opportunity, prospect email, proposal response, bid intelligence, project brief, assess bid, what do we know about this opportunity.
 
   '
-model: full
+model_tier: reasoning
 queued: true
 mcp_servers:
 - .

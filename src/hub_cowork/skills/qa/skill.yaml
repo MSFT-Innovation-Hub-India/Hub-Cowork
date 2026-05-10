@@ -2,7 +2,7 @@ name: qa
 description: 'Answer questions that require looking up data from Microsoft 365: calendar events, documents, emails, contacts, etc.
 
   '
-model: mini
+model_tier: fast
 queued: true
 mcp_servers:
 - workiq

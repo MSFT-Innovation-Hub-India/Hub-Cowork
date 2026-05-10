@@ -2,7 +2,7 @@ name: shelf_watch
 description: 'Compare retail prices across Croma and Reliance Digital for identical consumer-electronics SKUs (iPhones, Samsung TVs, LG washing machines, etc.). Captures price, MRP, EMI, exchange offer, and stock from public product detail pages, then produces a markdown comparison and Word report. Keywords: shelf watch, competitive pricing, price comparison, Croma vs Reliance, retail intelligence, MRP check, EMI offer, exchange offer, in-stock check, electronics price, iPhone price, TV price, washing machine price.
 
   '
-model: full
+model_tier: reasoning
 reasoning_effort: medium
 queued: true
 mcp_servers:

@@ -2,7 +2,7 @@ name: agenda_repurpose
 description: 'Repurpose, reuse, adapt, or clone an existing engagement agenda document for a new customer. Takes a source agenda and creates a new Word document with updated customer name, date, and venue. Keywords: repurpose agenda, reuse agenda, adapt agenda, clone agenda, copy agenda for another customer, same agenda different customer, create agenda based on existing one.
 
   '
-model: full
+model_tier: reasoning
 queued: true
 mcp_servers:
 - workiq

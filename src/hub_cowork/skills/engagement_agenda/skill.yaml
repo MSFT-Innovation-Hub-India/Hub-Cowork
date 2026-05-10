@@ -1,6 +1,6 @@
 name: engagement_agenda
 description: 'Create the agenda for a Microsoft Innovation Hub Customer Engagement end-to-end: locate briefing calls, extract goals, design the session-by-session agenda, and publish a Word document. Keywords: agenda, engagement agenda, innovation hub, briefing call, customer engagement, agenda document, create agenda, build agenda, publish agenda.'
-model: full
+model_tier: reasoning
 reasoning_effort: medium
 queued: true
 mcp_servers:

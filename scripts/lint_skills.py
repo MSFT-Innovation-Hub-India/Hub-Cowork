@@ -69,6 +69,20 @@ def lint_skill(folder: Path) -> list[str]:
                 f"(see SKILLS_DESIGN_PRINCIPLES.md \u00a711)"
             )
 
+    # Legacy `model: full|mini` should be renamed to `model_tier: reasoning|fast`.
+    if "model" in data and "model_tier" not in data:
+        errors.append(
+            f"{yaml_path.relative_to(ROOT)}: legacy key 'model:' \u2014 "
+            f"rename to 'model_tier:' with values 'reasoning' or 'fast' "
+            f"(see SKILLS_DESIGN_PRINCIPLES.md \u00a712)"
+        )
+    tier_val = data.get("model_tier") or data.get("model")
+    if tier_val is not None and tier_val not in ("reasoning", "fast", "full", "mini"):
+        errors.append(
+            f"{yaml_path.relative_to(ROOT)}: model_tier must be 'reasoning' or 'fast' "
+            f"(got {tier_val!r})"
+        )
+
     if md_path.is_file():
         md_text = md_path.read_text(encoding="utf-8")
         for marker in BANNED_MARKERS:

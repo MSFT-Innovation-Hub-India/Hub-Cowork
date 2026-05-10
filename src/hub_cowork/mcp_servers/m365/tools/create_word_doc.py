@@ -23,23 +23,89 @@ SCHEMA = {
     "name": "create_word_doc",
     "description": (
         "Create a Microsoft Word document from agenda markdown content. "
-        "The document is saved to the configured output folder and opened automatically."
+        "The document is saved to the configured output folder and opened automatically. "
+        "Either pass an explicit `filename`, or pass `customer_name` (and optionally "
+        "`engagement_date`) and the tool will build the filename in the form "
+        "Agenda-<CustomerName>-<Month-Year>-<MMDDHHmm>.docx."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "filename": {
-                "type": "string",
-                "description": "The filename for the Word document (e.g. Agenda-Tesco-April-2026.docx).",
-            },
             "markdown_content": {
                 "type": "string",
                 "description": "The full agenda markdown content including metadata header and table.",
             },
+            "filename": {
+                "type": "string",
+                "description": (
+                    "Optional explicit filename (e.g. 'Agenda-Tesco-April-2026.docx'). "
+                    "If omitted, the tool builds one from customer_name + engagement_date."
+                ),
+            },
+            "customer_name": {
+                "type": "string",
+                "description": (
+                    "Customer name used to build the filename when `filename` is omitted. "
+                    "Spaces/punctuation are sanitised automatically."
+                ),
+            },
+            "engagement_date": {
+                "type": "string",
+                "description": (
+                    "Optional engagement date as 'Month YYYY' (e.g. 'January 2026') or "
+                    "ISO date 'YYYY-MM-DD'. Used to build the filename when omitted; "
+                    "defaults to current month/year if missing or 'TBD'."
+                ),
+            },
         },
-        "required": ["filename", "markdown_content"],
+        "required": ["markdown_content"],
     },
 }
+
+
+_FILENAME_INVALID = re.compile(r'[\\/:*?"<>|]+')
+
+
+def _sanitise_customer(name: str) -> str:
+    """Customer name → filename-safe segment: collapse whitespace to single
+    hyphens and strip filesystem-invalid characters. Preserves case."""
+    cleaned = _FILENAME_INVALID.sub("", name).strip()
+    cleaned = re.sub(r"\s+", "-", cleaned)
+    cleaned = re.sub(r"-+", "-", cleaned).strip("-")
+    return cleaned or "Customer"
+
+
+def _resolve_month_year(engagement_date: str | None) -> str:
+    """Return 'Month-YYYY' from a flexible input. Falls back to current
+    month/year if empty, 'TBD', or unparseable."""
+    from datetime import datetime
+    now = datetime.now()
+    if not engagement_date or engagement_date.strip().lower() in ("tbd", "tba", ""):
+        return now.strftime("%B-%Y")
+    raw = engagement_date.strip()
+    # Try ISO date first.
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%B-%Y")
+        except ValueError:
+            pass
+    # Try 'Month YYYY' / 'Mon YYYY'.
+    for fmt in ("%B %Y", "%b %Y", "%B-%Y", "%b-%Y"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%B-%Y")
+        except ValueError:
+            pass
+    # Last resort: current month/year.
+    return now.strftime("%B-%Y")
+
+
+def _build_filename(customer_name: str, engagement_date: str | None) -> str:
+    """Build 'Agenda-<Customer>-<Month-YYYY>-<MMDDHHmm>.docx'."""
+    from datetime import datetime
+    customer = _sanitise_customer(customer_name)
+    month_year = _resolve_month_year(engagement_date)
+    stamp = datetime.now().strftime("%m%d%H%M")
+    return f"Agenda-{customer}-{month_year}-{stamp}.docx"
 
 
 def _set_cell_borders(cell):
@@ -279,8 +345,20 @@ def _parse_markdown(markdown: str) -> tuple[dict, list[str], list[list[str]]]:
 
 def handle(arguments: dict, *, on_progress=None, **kwargs) -> str:
     """Create Word document from markdown content."""
-    filename = arguments["filename"]
+    filename = arguments.get("filename")
     markdown_content = arguments["markdown_content"]
+    customer_name = arguments.get("customer_name")
+    engagement_date = arguments.get("engagement_date")
+
+    if not filename:
+        if not customer_name:
+            return (
+                '{"status": "error", "kind": "config", '
+                '"message": "create_word_doc requires either filename or customer_name."}'
+            )
+        filename = _build_filename(customer_name, engagement_date)
+    elif not filename.lower().endswith(".docx"):
+        filename = f"{filename}.docx"
 
     # Get output folder and template from hub config
     try:

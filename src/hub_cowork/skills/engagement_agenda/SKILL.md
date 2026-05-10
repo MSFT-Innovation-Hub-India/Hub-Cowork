@@ -190,15 +190,7 @@ Surface the agenda via `log_progress` ("Engagement Agenda for &lt;customer&gt;")
 
 ## Publishing the Word document
 
-Build a filename in the form `Agenda-<CustomerName>-<Month-Year>-<Timestamp>.docx`:
-
-- `<CustomerName>`: spaces → hyphens, strip filename-invalid characters.
-- `<Month-Year>`: from the engagement date in metadata; if `TBD`, use the current month and year.
-- `<Timestamp>`: compact `MMDDHHmm` based on current time, so the filename is unique across runs.
-
-Example: `Agenda-Diebold-Nixdorf-January-2026-04111430.docx`
-
-Call `create_word_doc` with that filename and the COMPLETE agenda markdown (do not truncate, summarize, or reformat). The tool returns a confirmation including a line `Open link (markdown): [Open document](file:///...)` — capture that exact link string verbatim.
+Call `create_word_doc` with the COMPLETE agenda markdown (do not truncate, summarize, or reformat) plus the `customer_name` and the engagement date if known — the tool builds the filename itself in the form `Agenda-<Customer>-<Month-Year>-<Timestamp>.docx`. The tool returns a confirmation including a line `Open link (markdown): [Open document](file:///...)` — capture that exact link string verbatim.
 
 Surface the result via `log_progress` ("Document Created") with the document name, file path, the captured `[Open document]` markdown link, and a note that the document has been opened automatically. On failure, `log_progress` ("Document Creation Failed") with the error and stop.
 
