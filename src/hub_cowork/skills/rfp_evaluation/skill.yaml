@@ -1,0 +1,21 @@
+name: rfp_evaluation
+description: 'Evaluate an RFP and prepare a Bid Intelligence Brief. Keywords: RFP, request for proposal, bid, evaluate RFP, new opportunity, prospect email, proposal response, bid intelligence, project brief, assess bid, what do we know about this opportunity.
+
+  '
+model: full
+queued: true
+mcp_servers:
+- .
+- workiq
+- m365
+- utility
+tool_allowlist:
+- query_workiq
+- log_progress
+- search_foundryiq
+- query_fabric_agent
+- create_rfp_brief_doc
+- share_onedrive_document
+- send_email
+- get_hub_config
+- create_calendar_reminder

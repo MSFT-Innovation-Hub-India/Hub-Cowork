@@ -18,7 +18,7 @@ from typing import Any
 # Status values
 # active       — created, accepting input, not currently executing
 # running      — executor is mid-LLM/tool loop
-# awaiting_user — skill emitted [AWAITING_CONFIRMATION], paused for user reply
+# awaiting_user — model ended its turn with a question; paused for user reply
 # completed    — last run finished normally (user can still send follow-ups)
 # failed       — last run raised; user can retry by sending a new message
 # archived     — hidden from default list; read-only until unarchived

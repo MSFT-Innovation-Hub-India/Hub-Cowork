@@ -1,5 +1,73 @@
 # Project Guidelines
 
+## Design Principles (binding)
+
+**Read [`docs/architecture/SKILLS_DESIGN_PRINCIPLES.md`](../docs/architecture/SKILLS_DESIGN_PRINCIPLES.md) before authoring or modifying any skill, tool, runtime code, or `agent_core` change.** It is the authoritative spec for **the entire Hub Cowork architecture** — skills, tools, tool packaging, skill discovery, routing, the agent loop, conversation state, auth sharing, and progress streaming. Hub Cowork is being built as a **reference implementation** of the Claude-Cowork-style "skills-based economy" pattern on Azure OpenAI Responses API.
+
+The doc is split into three parts:
+
+- **Part I (§1–§10)** — the three layers (model = orchestrator, skill = expertise, tool = mechanical work), banned patterns, and the §9 PR checklist.
+- **Part II (§11–§17)** — runtime mechanics: tool packaging, skill loading, routing, the agent loop's exact shape, conversation state, auth sharing, progress streaming.
+- **Part III (§18)** — the deliberate divergences from Cowork (per-skill tool scoping, model-tier routing, single Entra credential, local Python tools) and the rationale for each.
+
+The non-negotiables (full rationale and runtime mechanics in the design doc):
+
+1. **Three layers, no mixing.** Model = orchestrator. Skill = domain expertise (judgment). Tool = mechanical work (data + transformation + side effects). Runtime = wiring, no decisions.
+2. **Skill instructions live in `SKILL.md` (markdown), not in `skill.yaml`.** YAML is runtime config only: `name`, `description`, `tools`, `model_tier`, `reasoning_effort`, `queued`. No `instructions:`, no `next_skill:`, no `conversational:`.
+3. **Skills carry expertise, not procedure.** No numbered step-by-step runbooks. No string-formatting recipes. No "if X output exact-string Y" rules. If it can be a Python function, it must be.
+4. **Tools return structured facts, not user-facing prose.** Return JSON like `{"found": false, "customer": "..."}` — let the model decide what to say. Never hardcode error sentences in a tool's return value.
+5. **One skill per workflow, not one skill per phase.** Multi-step workflows (like the agenda creation chain) are a single skill with smarter tools, not chained skills with `next_skill` and on-disk JSON handoffs.
+6. **HITL is a conversation turn, not a state machine.** No `[AWAITING_CONFIRMATION]` / `[STOP_CHAIN]` markers in instructions. The model asks; the runtime parks the thread at `awaiting_user`; the next message resumes via `previous_response_id`.
+7. **`agent_core` is a mechanical bridge.** It does not parse model output for control flow, does not chain skills, does not duplicate the Responses API's tool-call loop. The canonical loop is `while requires_action: execute → submit_tool_outputs` and nothing more (§14.1).
+8. **Tool packaging is folder-based and registry-free.** One file per tool, exporting `SCHEMA: dict` and `handle()`. Auto-discovered from `tools/` and `skills/<skill>/tools/`. No decorators, no manifests, no central enum (§11).
+9. **Skills are folders, auto-discovered.** A folder with `skill.yaml` + `SKILL.md` is a skill — no registration, no manifest. The router prompt is built from each skill's `description` (§12).
+10. **Routing is one cheap fast-model call** that returns a skill name or `"none"`. The router does not see tool definitions (§13).
+11. **`previous_response_id` is the only conversation state.** No `thread.messages`, no per-skill scratchpads, no inter-phase JSON store (§15).
+12. **One shared Entra credential.** Tools call `get_credential()` and trust it. Never re-instantiate, never `DefaultAzureCredential`, never `az` CLI (§16, also §9b/preserved).
+13. **Progress is `on_progress(kind, message)` only.** Tool returns are JSON for the model, not prose for the UI. `log_progress` is the model's microphone (§17).
+14. **Tools are MCP servers — stdio now, HTTP later.** Each skill owns a per-skill MCP server under its folder; cross-cutting tools live in shared servers under `src/hub_cowork/mcp_servers/`. The host's `MCPClientPool` spawns each server as a stdio subprocess on first use and keeps it warm for the host's lifetime — calls are multiplexed, never one-subprocess-per-call. Stdio MCP servers **cannot** be passed to the Azure OpenAI Responses API as native `mcp` tools (that mode only accepts remote HTTP URLs); they are registered as ordinary `type="function"` tools built from each server's `tools/list` advertisement, and the agent loop dispatches `requires_action` calls into the pool. Auth crosses the boundary via the shared on-disk MSAL cache; servers call `get_credential()` themselves. Future move to ACA is a transport swap (stdio → streamable HTTP) declared in `skill.yaml`; tools usually stay client-dispatched, with native Responses-API `mcp` registration as an opt-in per server (§8, §11, §11.4a, §11.7, §14.1, §18.5).
+
+When the **existing code** in this repo conflicts with these principles (chained `hub_agenda_creation` skills, marker parsing in `agent_core.py`, `instructions:` in YAML, `engagement_context` JSON store, `thread.messages`), the existing code is **the thing to fix**, not a pattern to follow. The migration is staged in [`docs/architecture/REARCHITECTURE_PLAN.md`](../docs/architecture/REARCHITECTURE_PLAN.md). Until each phase lands, both shapes coexist; new code goes in the new shape.
+
+Run the §9 checklist in `SKILLS_DESIGN_PRINCIPLES.md` before declaring any change "done."
+
+### Pre-change reasoning gate (mandatory)
+
+Before writing or modifying **any** code, prompt, skill file, tool, or runtime change — pause and ask yourself:
+
+> *"Does this change violate any of the 14 non-negotiables above, or anything in `SKILLS_DESIGN_PRINCIPLES.md` Part I, Part II, or Part III?"*
+
+Run the change against this short check:
+
+- Am I about to put procedure, string-formatting, validation logic, or numbered steps into a `SKILL.md`? → **Stop.** That belongs in a tool. Redesign the tool, then write a thin `SKILL.md` paragraph that describes the *judgment*, not the steps.
+- Am I about to put `instructions:`, `next_skill:`, `conversational:`, or any prose into a `skill.yaml`? → **Stop.** YAML is config only. Move prose to `SKILL.md`.
+- Am I about to make a tool return a user-facing sentence (`"No agenda found for X. Run phase 3 first."`)? → **Stop.** Return structured JSON facts (`{"found": false, "customer": "X"}`) and let the model write the sentence.
+- Am I about to add control-flow markers (`[STOP_CHAIN]`, `[AWAITING_CONFIRMATION]`) or parse model text for them in `agent_core`? → **Stop.** HITL is a thread-status flag, not a marker.
+- Am I about to make `agent_core` decide *what* to do next (which tool, which skill, when to stop, retry, mutate a tool result)? → **Stop.** That's the model's job. `agent_core` only executes what the Responses API requested.
+- Am I about to chain skills via `next_skill`, or pass state between phases via on-disk JSON? → **Stop.** Collapse into one skill; let `previous_response_id` carry state.
+- Am I about to add a tool registry, decorator-based registration outside of `@mcp.tool(...)`, or a central skill manifest? → **Stop.** Skills are discovered by folder shape; tools are registered with FastMCP's `@mcp.tool` inside their server module. No other registration mechanism.
+- Am I about to make a tool call another tool internally (within the same MCP server *or* across servers)? → **Stop.** Composition is the model's job. Split into two tools the model invokes in sequence.
+- Am I about to register a stdio MCP server with the Responses API as a native `mcp` tool (`type="mcp", server_url=...`)? → **Stop.** Responses' native MCP tool only accepts remote HTTP URLs. Stdio servers are exposed as ordinary `type="function"` tools built from `tools/list`, and dispatched client-side through `MCPClientPool`.
+- Am I about to spawn an MCP server subprocess per tool call, or bypass the `MCPClientPool` to launch one ad hoc? → **Stop.** One subprocess per server name, lifted by the pool, multiplexed across all calls.
+- Am I about to pass an Entra token as an MCP tool argument, or marshal credentials over the MCP transport? → **Stop.** MCP servers call `get_credential()` themselves; the shared on-disk MSAL cache makes silent refresh work across processes.
+- Am I about to construct a credential inside a tool, call `DefaultAzureCredential`, or shell out to `az`? → **Stop.** Use `get_credential()`. Auth is shared, single-Entra, WAM-broker-first.
+- Am I about to maintain conversation history outside `previous_response_id` (a `messages` list, a per-skill scratchpad, an inter-phase JSON file)? → **Stop.** The Responses API holds it. Don't duplicate.
+
+If any answer is "yes," **change the approach before writing any code.** State the conflict explicitly, propose the compliant redesign, and only then implement. Do not ship a violation with a TODO to fix later.
+
+### Things that must NOT be touched in any redesign
+
+The following work today and are explicitly preserved across the rearchitecture. Do not refactor, replace, or "simplify" them unless the user asks:
+
+- **Authentication and credential management** — `core/auth_credential.py` (WAM broker via `InteractiveBrowserBrokerCredential` parented to the pywebview HWND, with classic `InteractiveBrowserCredential` fallback), the shared-credential pattern via `set_credential()` / `get_credential()`, the `AuthenticationRecord` persistence for silent token refresh, the per-cache MSAL token blob naming (`hub_cowork`), and the Settings-UI Sign-In flow. This is battle-tested and works correctly across Entra scopes for Graph, Azure OpenAI, FoundryIQ, Fabric, and ACS. (§16, §9b, §18.4.)
+- **Per-conversation concurrency model** — `core/thread_manager.py` (registry + `current_thread_id` ContextVar), `core/thread_executor.py` (`ExecutorPool`, one daemon worker per active thread, idle shutdown), `core/conversation_thread.py` (the dataclass with `previous_response_id`, status, `progress_log`, `code_log`, `hitl_correlation_tag`, `source`), and `core/thread_store.py` (`LocalJsonThreadStore` with debounced atomic writes under `~/.hub-cowork/threads/`). Multiple chat threads run independently and in parallel, each with its own Responses-API context.
+- **Desktop host and UI integration** — `host/desktop_host.py` (WebSocket on 18080, HTTP on 18081, pywebview window, tray wire-up), `assets/chat_ui.{html,js,css}`, the full WebSocket protocol (`create_thread`, `send_to_thread`, `cancel_thread`, `system_query`, `thread_progress`, `thread_completed`, `service_status`, `auth_status`, …), and the request-id correlation scheme. The rearchitecture is **server-side only.**
+- **Teams / Redis remote-message bridge** — `host/redis_bridge.py` with the per-Teams-user in-flight gate, `classify_inbox` 3-way classifier, and `#thread-xxxx` correlation tags. Orthogonal to skills.
+- **Per-skill model-tier routing** (`reasoning` vs `fast`) — a deliberate strength over Cowork's single-model approach (§18.3); keep it.
+- **Settings UI + env override mechanism** — `_env_overrides` in `~/.hub-cowork/hub_config.json`, applied in `__main__.py` before `agent_core` import; `restart` WS command relaunches the process.
+
+**Where the new MCP layer plugs in:** the migration is a drop-in dispatcher swap *inside* the agent loop — `tool.handle(...)` becomes `mcp_pool.call(server, name, args, on_progress=...)`. `ExecutorPool`, `ThreadManager`, the WebSocket protocol, and the chat UI are below the loop and never see the change. The `MCPClientPool` is host-scoped (not thread-scoped) — one warm subprocess per server, multiplexed across every conversation thread. (§9b contract.)
+
 ## Architecture
 
 Hub Cowork is a **single-process, multi-threaded Windows desktop agent** (Python 3.12+). It combines a WebSocket server, pywebview UI, Win32 system tray, a **per-conversation executor pool**, and an optional Azure Managed Redis bridge for Teams-based remote messaging.
@@ -68,42 +136,53 @@ Env precedence (highest first): Settings UI `_env_overrides` in `~/.hub-cowork/h
 
 ## Adding Skills and Tools
 
-**New tool** — create `src/hub_cowork/tools/<name>.py` (shared) or `src/hub_cowork/skills/<group>/tools/<name>.py` (skill-local) exporting:
+> Anything in this section that contradicts [`SKILLS_DESIGN_PRINCIPLES.md`](../docs/architecture/SKILLS_DESIGN_PRINCIPLES.md) is a description of **legacy** behavior present in the codebase today, not the target. New skills and tools must follow the design doc — see Part II §11 (MCP tool packaging), §11A (shared servers), and §12 (skill loading).
 
-- `SCHEMA: dict` — OpenAI function JSON schema with `name`, `description`, `parameters`
-- `handle(arguments: dict, *, on_progress=None, workiq_cli=None, **kwargs) -> str`
+**New tool** (§11) — add it to an MCP server, never as a loose Python module:
 
-Files starting with `_` are skipped. Restart to pick up a new tool file.
+- **Per-skill tool** (used by one skill): create `src/hub_cowork/skills/<skill>/mcp_server/tools/<name>.py` and register it in that server's `server.py` with `@mcp.tool(name=..., description=...)`. The description is the model's only hint about *when* to call this tool — write it MCP-style (intent verbs, trigger context).
+- **Shared tool** (used by ≥2 skills, or wraps a foundational service like WorkIQ / Graph / ACS): add it under `src/hub_cowork/mcp_servers/<server>/tools/<name>.py`. Don't preemptively share — promote a tool to a shared server only when a second skill actually needs it.
+- Tool functions return **JSON-serializable structured facts** with a `status`/`found` discriminator. Never user-facing prose. Never call other tools (within or across servers). Never construct credentials — call `get_credential()` from inside the tool function. Progress flows through MCP notifications, which the pool forwards to `on_progress`.
+- No top-level side effects at module import; no spawn-per-call. The host's `MCPClientPool` owns subprocess lifecycle.
 
-**New skill** — create `src/hub_cowork/skills/<name>.yaml` (standalone) or `src/hub_cowork/skills/<group>/<name>.yaml` (grouped chain) with fields: `name`, `description`, `model` (`"full"` | `"mini"`), `conversational` (bool), `queued` (bool), `tools` (list of tool names), `instructions` (str). Optional: `next_skill` (str).
+**New skill** (§12) — create a folder `src/hub_cowork/skills/<name>/` containing:
 
-Mark chained internal skills with `[INTERNAL` at the start of `description` to exclude them from the router (reachable only via `next_skill`).
+- `skill.yaml` — runtime config only. Fields: `name`, `description` (router contract — pack with intent verbs and trigger phrases), `mcp_servers` (list of shared server names plus `.` for the skill's own `mcp_server/`), `tool_allowlist` (optional subset filter), `model_tier` (`"reasoning"` | `"fast"`), `reasoning_effort` (when `reasoning`), `queued` (bool). **No `instructions`, no `next_skill`, no `conversational`, no loose `tools:` list.**
+- `SKILL.md` — the system prompt as Markdown. Domain expertise and high-level workflow. No numbered runbooks, no control-flow markers, no procedural recipes.
+- Optional `mcp_server/` subfolder for skill-local tools (auto-spawned by the pool when listed in `skill.yaml`).
 
-Skills are auto-discovered recursively from `skills/**/*.yaml`. The router prompt is rebuilt automatically from all non-internal descriptions. Greetings/small talk are handled directly by the router (classified as `"none"`) without invoking any skill.
+Skills are auto-discovered recursively from folder shape — a folder with both `skill.yaml` and `SKILL.md` is a skill. The router prompt is rebuilt from each skill's `description`. Greetings/small talk are classified as `"none"` and answered by the router directly.
 
-YAML-only edits (instructions, etc.) are picked up without restart. New files require a restart.
+### Routing and the agent loop
 
-### Conversational skills
+Routing is one cheap fast-model call that returns a skill name or `"none"`. The router does not see tool definitions. (§13)
 
-Set `conversational: true` when the skill needs multi-turn context (follow-up Q&A, HITL). Per-thread conversation history is stored on the `ConversationThread` itself (`thread.messages`), bounded and reused across turns. Non-conversational skills are stateless per invocation.
+The agent loop in `agent_core` is the canonical Responses-API tool-execution bridge — `while response.status == "requires_action": execute tools → submit_tool_outputs`. Tool execution dispatches into the `MCPClientPool`, which routes the call to the right warm subprocess. No marker parsing, no chaining, no result mutation. (§14)
 
-### Human-in-the-loop confirmation
+### Human-in-the-loop
 
-1. Set `conversational: true` — needed for turn detection via message history.
-2. Structure instructions as multi-turn: Turn 1 presents candidates and emits `[AWAITING_CONFIRMATION]`; Turn 2+ handles confirmation, corrections, or re-asks.
-3. On `[AWAITING_CONFIRMATION]`, `agent_core` sets `thread.active_session` (keyed by skill name), strips the marker, parks the thread at `status = "awaiting_user"`, and returns the text to the user without chaining.
-4. The user's next message to the same thread resumes the skill. Teams replies use the `#thread-xxxx` correlation tag (extracted by the relay as a `thread_id` hint) so routing is deterministic.
-5. Normal completion (no markers) clears `active_session` and chains to `next_skill` if configured.
-6. Reference implementation: `skills/hub_agenda_creation/engagement_briefing.yaml`.
+Don't add control-flow markers. Write `SKILL.md` so the model naturally asks the user a question when it needs confirmation. The runtime treats any final text response as either a completion or an HITL pause based on thread context — no marker parsing. (§14.4)
 
-### Skill chaining
+### Multi-step workflows
 
-Set `next_skill: <skill_name>` to auto-chain on normal completion. Control flow markers:
+Build them as a single skill with smarter tools. Phase-to-phase context flows via the Responses API's `previous_response_id` — no on-disk JSON handoff, no `thread.messages`. If you find yourself wanting `next_skill`, the right answer is "split a tool further" or "let the model orchestrate from richer instructions." (§5, §15)
 
-- `[STOP_CHAIN]` — halt chain on errors, clear `active_session`.
-- `[AWAITING_CONFIRMATION]` — pause for user input, do NOT chain.
+### Future: moving an MCP server to Azure Container Apps
 
-Inter-phase context (used by the 4-phase agenda chain) is passed through the `engagement_context` tool, which reads/writes JSON under `~/.hub-cowork/engagement_context/<customer>.json`.
+The MCP protocol is transport-agnostic. To move a server from local stdio to ACA-hosted streamable HTTP, change one entry in `skill.yaml` (`transport: streamable_http`, `url: ...`) and deploy the same server module behind a container. Skill code, tool code, and the agent loop are unchanged. (§11.7)
+
+### Legacy patterns still present in the tree (to be migrated)
+
+The following exist in the current codebase and will be removed during the migration in [`REARCHITECTURE_PLAN.md`](../docs/architecture/REARCHITECTURE_PLAN.md). Do not introduce new uses of them:
+
+- Loose Python tool modules under `src/hub_cowork/tools/` and `src/hub_cowork/skills/<skill>/tools/` exporting `SCHEMA: dict` + `handle()` — will be migrated into MCP servers.
+- `instructions:` field inside `*.yaml` skill files.
+- `next_skill:` chaining (`hub_agenda_creation/*`).
+- `conversational: true/false` flag.
+- `[AWAITING_CONFIRMATION]` / `[STOP_CHAIN]` markers in instructions.
+- `engagement_context` JSON-on-disk store for inter-phase handoff.
+- `thread.messages` history maintained outside `previous_response_id`.
+- `run_agent_on_thread` vs `run_skill_on_thread` distinction in `agent_core` (collapse to one function).
 
 ## Conventions
 

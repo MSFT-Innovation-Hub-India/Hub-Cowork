@@ -41,7 +41,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from hub_cowork.tools._tool_result import ok, no_data, error
+from hub_cowork.mcp_servers._tool_result import ok, no_data, error
 
 logger = logging.getLogger("hub_se_agent")
 
@@ -160,21 +160,23 @@ def _get_credential(tenant_id: str, auth_mode: str):
     if _cached_credential is not None:
         return _cached_credential
 
-    # Prefer the shared agent credential ONLY when it targets the same
-    # tenant as the FoundryIQ resource. The shared credential is bound to
-    # AZURE_TENANT_ID; when RESOURCE_TENANT_ID points elsewhere we must
-    # build a separate InteractiveBrowserCredential for that tenant.
-    try:
-        from hub_cowork.core.agent_core import get_credential as _get_shared_cred
-        shared_tenant = os.environ.get("AZURE_TENANT_ID")
-        if shared_tenant and tenant_id and shared_tenant.lower() == tenant_id.lower():
-            shared = _get_shared_cred()
-            if shared is not None:
-                logger.info("[FoundryIQ] Reusing shared agent credential (tenant match, silent refresh)")
-                _cached_credential = shared
-                return shared
-    except Exception as ex:
-        logger.debug("[FoundryIQ] Could not reuse shared credential: %s", ex)
+    # Same-tenant fast path: piggyback on the host's on-disk MSAL cache
+    # (`hub_cowork`) so silent refresh works in the MCP subprocess too.
+    # Cross-tenant case still needs its own interactive login below.
+    shared_tenant = os.environ.get("AZURE_TENANT_ID")
+    if (auth_mode != "cli" and shared_tenant and tenant_id
+            and shared_tenant.lower() == tenant_id.lower()):
+        try:
+            from hub_cowork.core.auth_credential import make_credential
+            logger.info("[FoundryIQ] Same-tenant path; using shared 'hub_cowork' MSAL cache")
+            cred = make_credential(
+                tenant_id=tenant_id,
+                cache_name="hub_cowork",
+            )
+            _cached_credential = cred
+            return cred
+        except Exception as ex:
+            logger.debug("[FoundryIQ] Same-tenant cred build failed: %s", ex)
 
     if auth_mode == "cli":
         from azure.identity import AzureCliCredential

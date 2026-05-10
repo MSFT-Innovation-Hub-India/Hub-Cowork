@@ -1,1301 +1,601 @@
-﻿# Hub Cowork
+# Hub Cowork
 
-**An always-on Windows desktop AI agent for Microsoft 365 engagement workflows.**
-
-Hub Cowork runs quietly on a Hub Solution Engineer's laptop, orchestrating multi-step workflows against Microsoft 365 (calendars, email, SharePoint, contacts, OneDrive) via WorkIQ and Azure OpenAI. It is reachable three ways:
-
-1. **Locally** — pywebview chat window summoned from the Windows system tray.
-2. **Remotely from Microsoft Teams** — a companion cloud relay (see [workiq-agent-remote-client](https://github.com/sansri/workiq-agent-remote-client)) bridges Teams messages into the agent via Azure Managed Redis.
-3. **Programmatically** — any client that can read/write the agent's Redis streams (a console test client is included).
-
-Hub Cowork exhibits the design traits of emerging local‑agent platforms (Claude CoWork, OpenClaw): **always‑on local execution, skills‑driven autonomy, and remote reachability** — applied to Microsoft 365 workflows that remain painful to do manually (resolving speakers, cross‑referencing briefing notes with calendars, drafting agendas, sending batched invites, analysing RFPs).
+> A local-first, single-user **Windows desktop AI agent** that runs an entire portfolio of Microsoft-stack workflows — engagement agendas, RFP intelligence briefs, meeting invites, retail price intelligence, M365 Q&A — through a unified **skills-based architecture** built on the **Azure OpenAI Responses API** and the **Model Context Protocol (MCP)**.
+>
+> Hub Cowork is intended as a **reference implementation** of the Anthropic [Claude Cowork](https://github.com/anthropics/knowledge-work-plugins) "skills + MCP" pattern, adapted to a Microsoft-cloud, single-Entra-identity, single-process desktop deployment.
 
 ---
 
-## Functional Features
+## Table of contents
 
-| Feature | Description |
-|---|---|
-| **Autonomous agentic execution** | State your intent in plain language. The agent orchestrates multi-step workflows end-to-end — deciding what data to fetch, what actions to take, and how to present the outcome — without further human input. |
-| **Remote access via Microsoft Teams** | Send and receive messages from your phone through Teams. The agent processes work locally on your machine and delivers the result back through Azure Managed Redis. |
-| **Multi-thread conversation model** | Every request is its own `ConversationThread` with an independent LLM context, executor, progress stream, and UI pane. Local and remote threads run in parallel — no cross-talk, no head-of-line blocking. |
-| **Thread persistence & archive** | Threads are persisted to `~/.hub-cowork/threads/active/` and can be archived, unarchived, or deleted from the UI. Survives app restarts. |
-| **Per-user Teams serialization** | At most one remote Teams task per user is "in flight" at a time. Follow-up replies to awaiting threads always go through; brand-new tasks that would stack are rejected politely with a pointer to the blocker thread. |
-| **Three-way inbox classifier** | Incoming Teams messages are LLM-classified as `new` (start a thread), `existing` (continue a running thread, with `#thread-xxxx` tag as fast-path), or `system` (instant non-queued reply). |
-| **Human-in-the-loop confirmation** | Skills can pause mid-flow with `[AWAITING_CONFIRMATION]`. The thread parks at status `awaiting_user`, persists state, and resumes on the user's next message (local click or Teams reply). |
-| **Real-time status** | Ask "what's the status of my request?" any time — a non-queued system skill reports progress milestones without interrupting running work. |
-| **Service connectivity indicators** | Header pills show live green/red/grey status for each backing service (WorkIQ CLI, FoundryIQ, Fabric Data Agent, Redis/Teams bridge). Updated passively from tool envelopes and refreshed by lightweight background probes. Pill text labels collapse to dots on narrower windows. |
-| **Skills-driven extensibility** | Each capability is a declarative YAML file. Add a new skill by dropping a YAML file into `src/hub_cowork/skills/` — no code changes. |
-| **Settings UI with env editor** | Opened from the **kebab (⋮) “More” menu in the top-right of the topbar**, which also exposes Restart agent, Skills, and About Hub Cowork. The Settings modal edits hub config (hub name, speakers, topic catalog, agenda folder, agenda template) and environment variables (endpoints, model names, Redis), with a one-click Restart agent button. A dismissible **config banner** appears at the top of the window when required settings are missing, with a direct shortcut into the Settings modal. |
-| **Responsive three-pane UI** | Desktop layout is a 3-column grid (Threads / Chat / Logs). Below 1200px the columns shrink, below 1000px the service-pill text labels hide, below 900px the right Logs pane becomes an off-canvas overlay (revealed by the chat-header *Show logs* button), and below 700px the left Threads pane also becomes an off-canvas overlay (revealed by a hamburger button in the topbar). A semi-transparent backdrop closes overlay panes on click. The right pane is also collapsible on the desktop layout (“details-collapsed”). |
-| **In-chat step cards** | Each progress / milestone event from the agent renders as a persistent inline step card in the chat (no separate Progress timeline). The right pane is now Logs-only and collapses by default until the user opens it. |
-| **Background operation** | Runs invisibly via `pythonw.exe` — no console window, no taskbar clutter until you summon it. |
-| **System tray icon** | Pure Win32 (zero extra deps). Left-click to show/hide, right-click for context menu. **Red-dot badge + tooltip count** appears whenever a remote Teams/Redis message arrives while the window is hidden, and clears automatically when you bring the window back up. |
-| **Toast notifications** | Reserved for sign-in feedback ("Opening browser for Azure sign-in", success/failure) and the "already running" launch nudge. Per-task start/complete toasts have been **removed** — the tray-icon badge is the silent, non-disruptive indicator for incoming Teams work. |
-| **Persistent authentication** | Sign in once; the WAM broker credential with persistent token cache refreshes silently across restarts. See [Authentication](#authentication) for the full per-tenant design. |
-| **Auto-start at Windows login** | Install script registers the assistant to launch at startup. |
+- [What it does](#what-it-does)
+- [Why it exists — the design pattern](#why-it-exists--the-design-pattern)
+- [The three layers](#the-three-layers)
+- [Runtime architecture](#runtime-architecture)
+- [How MCP is wired (the important nuance)](#how-mcp-is-wired-the-important-nuance)
+- [Built-in skills](#built-in-skills)
+- [The two clouds — M365 + Azure](#the-two-clouds--m365--azure)
+- [Per-conversation concurrency](#per-conversation-concurrency)
+- [Teams remote access (optional)](#teams-remote-access-optional)
+- [Authentication](#authentication)
+- [Configuration & Settings UI](#configuration--settings-ui)
+- [Project structure](#project-structure)
+- [Getting started](#getting-started)
+- [WebSocket protocol](#websocket-protocol)
+- [Service status monitor](#service-status-monitor)
+- [Adding a skill or a tool](#adding-a-skill-or-a-tool)
+- [Design docs](#design-docs)
 
 ---
 
-## Key Technical Capabilities
+## What it does
 
-| Capability | Implementation |
-|---|---|
-| **Azure OpenAI Responses API** | The agentic core. Tool definitions + natural-language instructions drive autonomous tool-call orchestration. `previous_response_id` is **stored per ConversationThread** so each thread has an independent LLM context. |
-| **Per-conversation executor pool** | `ExecutorPool` spawns one daemon thread per active conversation (`_ThreadWorker`); idle workers self-shut down. Each worker sets a `current_thread_id` ContextVar so logs get tagged correctly. |
-| **Azure Managed Redis (cluster mode)** | Inbox/outbox streams keyed by user email. Passwordless Entra ID via `redis-entraid` credential provider with automatic token refresh. |
-| **Namespaced Redis keys** | Every key is prefixed with `REDIS_NAMESPACE` (default `hub-cowork`) so this fork cannot collide with deployments sharing the same Redis instance. |
-| **Composable tool system** | Tools are self-contained Python modules discovered at startup via `importlib`. Shared tools live in `src/hub_cowork/tools/`; skill-local tools live beside the skill under `skills/<group>/tools/`. |
-| **Composable skill system** | Skills are YAML files discovered recursively from `src/hub_cowork/skills/**/*.yaml`. The router prompt is auto-generated from skill descriptions. Internal chained skills are excluded from routing. |
-| **Shared credential architecture** | A single `InteractiveBrowserCredential` is shared across OpenAI, WorkIQ, ACS, and Redis — one sign-in, zero `az` CLI subprocesses on Windows. |
+Hub Cowork is the daily driver of a Microsoft Innovation Hub Solution Engineer. From a single chat window (or from Microsoft Teams when you're away from your desk), the agent:
 
----
+- Builds a **customer engagement agenda** end-to-end — finds the briefing call in your Outlook calendar, reads the meeting notes, classifies the engagement type (ADS, Hackathon, Business / Solution Envisioning, …), constructs a detailed agenda table with timings and speakers, and publishes it as a Word document into your OneDrive.
+- Repurposes an existing agenda for a new customer.
+- Sends **calendar invites** to the speakers on a published agenda.
+- Compiles a **Bid Intelligence Brief** for an inbound RFP — pulls the RFP from your inbox, queries FoundryIQ (Azure AI Search over past customer testimonials), queries the Fabric Data Agent (Lakehouse-backed structured project data), synthesises the brief, saves it to OneDrive, and shares it with the team.
+- Runs a **shelf-watch** — drives a real Chromium browser via Azure OpenAI's Computer-Use model to extract competitor pricing for SKUs across multiple retail websites, then compares against your last run.
+- Answers **conversational Q&A** about any of your M365 data via WorkIQ.
+- Reports **task status** instantly — even while a long-running task is in flight.
 
-## The Two-Part Architecture
-
-![Solution Architecture](docs/architecture.png)
-
-**Part 1** (this repo) is the agent itself — running on a Windows 11 laptop, processing tasks locally with full access to the user's Microsoft 365 data via WorkIQ. It registers its presence in Azure Managed Redis and polls an inbox stream for remote requests.
-
-**Part 2** ([workiq-agent-remote-client](https://github.com/sansri/workiq-agent-remote-client)) is an **Azure Container App**, built on the **Microsoft 365 Agents SDK**, that fronts an **Azure Bot Service** channel for Microsoft Teams. The Bot Service hands inbound Teams messages to the container app; the container app writes them to the Redis inbox stream and reads outbox replies back. It extracts `#thread-xxxx` correlation tags from Teams replies and passes them as a fast-path hint so the agent knows which thread the message continues. The container app respects the `REDIS_NAMESPACE` env var so the same relay can point at different agent deployments.
-
-The user experience: from a phone or laptop, the user opens **Microsoft Teams** → message hits the **Azure Bot Service** channel → forwarded to the **Azure Container App** (M365 Agents SDK) → published to **Azure Managed Redis** → the agent on the user's laptop picks it up, runs the full agentic workflow (retrieving M365 data, calling tools, orchestrating multi-step actions) → the result is written back through Redis → Container App → Bot Service → Teams chat. Because the local agent runs autonomously in the system tray, the user can fire off a workflow from Teams on the move, close the laptop lid (or leave the app minimised), and be notified asynchronously in Teams when the workflow completes.
+Everything runs on the user's laptop, under the user's Entra identity, with one sign-in.
 
 ---
 
-## A Heterogeneous Agentic Solution
+## Why it exists — the design pattern
 
-Hub Cowork bridges two clouds of the Microsoft AI stack, with the user's **Microsoft Entra** identity flowing on-behalf-of across both:
+Production AI agents that try to encode workflow logic in one giant system prompt collapse under their own weight: the prompt grows past 5–10K tokens, every change risks a regression, the model starts hallucinating procedure, and human-in-the-loop turns devolve into brittle marker-string state machines (`[AWAITING_CONFIRMATION]`, `[STOP_CHAIN]`, …).
+
+Anthropic's [Claude Cowork](https://github.com/anthropics/knowledge-work-plugins) fixed this with a clean three-layer split: the **model** orchestrates, **skills** carry domain expertise, **tools** do mechanical work. Hub Cowork is the same pattern, ported to:
+
+- **Azure OpenAI** (Responses API) instead of Anthropic Claude
+- **One shared Microsoft Entra identity** instead of per-tool OAuth
+- **Local Python MCP servers** spawned by the host, calling Microsoft cloud services on the user's behalf (instead of cloud-resident MCP services)
+
+The full charter is in [docs/architecture/SKILLS_DESIGN_PRINCIPLES.md](docs/architecture/SKILLS_DESIGN_PRINCIPLES.md). The 14 non-negotiables there are binding for every skill, tool, and runtime change in this repo. The condensed version follows.
+
+---
+
+## The three layers
+
+| Layer | Owns | Lives in | What it must NOT do |
+|---|---|---|---|
+| **Model** (Azure OpenAI Responses API) | Tool selection, sequencing, conversation, HITL turns, error communication | The Responses API server-side loop | — |
+| **Skill** (`SKILL.md`) | Domain expertise — when/why/what-if judgment, engagement-type heuristics, communication tone | `src/hub_cowork/skills/<name>/SKILL.md` | Numbered runbooks, string-formatting recipes, control-flow markers, anything that could be a Python function |
+| **Tool** (`@mcp.tool`) | Mechanical work — fetch, parse, transform, write | An MCP server module under `mcp_servers/<name>/tools/` or `skills/<name>/mcp_server/tools/` | Decide what to tell the user, call other tools, construct credentials, hardcode user-facing prose |
+
+The runtime in `core/agent_core.py` is **wiring, not intelligence**. It does not parse model output for control-flow markers. It does not chain skills. It does not interpret tool results. The canonical loop is exactly:
+
+```python
+while response.status == "requires_action":
+    for tc in response.required_action.submit_tool_outputs.tool_calls:
+        result = mcp_pool.call(server, tc.function.name, json.loads(tc.function.arguments),
+                               on_progress=on_progress)
+        outputs.append({"tool_call_id": tc.id, "output": result})
+    response = client.responses.submit_tool_outputs(response_id=response.id,
+                                                    tool_outputs=outputs)
+```
+
+That's it. ~30 lines. Everything else (skill discovery, model-tier routing, conversation persistence, HITL pause/resume, Teams bridging, UI broadcast) sits *around* this loop, never *inside* it.
+
+### What this buys us
+
+- **Adding a new workflow = drop in a folder.** A skill is `skill.yaml` + `SKILL.md` (+ optional `mcp_server/`). No registration, no manifest, no decorator.
+- **Workflows stay single-skill.** The 4-phase agenda chain that used to exist (`hub_agenda_creation/{briefing,goals,build,publish}.yaml` with `next_skill` chaining and on-disk `engagement_context` JSON handoffs) collapsed into ONE `engagement_agenda` skill once procedure moved into tools and `previous_response_id` carried phase-to-phase context.
+- **HITL is a conversation turn.** The model asks a question; the runtime sees a final text response with no pending tool calls and parks the thread at `awaiting_user`; the next message resumes via `previous_response_id`. No markers in instructions, no marker parsing in `agent_core`.
+- **Tool composition is the model's job.** Tools never call other tools. The model orchestrates.
+
+---
+
+## Runtime architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          Windows 11 desktop (one process)                   │
+│                                                                             │
+│  pywebview window  ◄── WebSocket ──►  desktop_host.py                       │
+│  (chat_ui.html)        (port 18080)   • WS server + HTTP server (18081)     │
+│                                       • System tray (Win32 ctypes)          │
+│                                       • Optional Redis bridge               │
+│                                            │                                │
+│                                       ┌────▼─────┐                          │
+│                                       │ Thread   │  one ConversationThread  │
+│                                       │ Manager  │  per chat tab            │
+│                                       └────┬─────┘                          │
+│                                            │                                │
+│                                       ┌────▼──────┐                         │
+│                                       │ Executor  │  one daemon worker per  │
+│                                       │ Pool      │  active thread          │
+│                                       └────┬──────┘                         │
+│                                            │                                │
+│              ┌─────────────────────────────▼──────────────────────────┐     │
+│              │             agent_core.run_agent_on_thread             │     │
+│              │  1. Router (fast model)  →  pick skill or "none"       │     │
+│              │  2. Load SKILL.md + skill.yaml                         │     │
+│              │  3. List MCP tools from each server in skill.yaml      │     │
+│              │  4. responses.create(...) with function-tool schemas   │     │
+│              │  5. while requires_action: dispatch into MCPClientPool │     │
+│              │  6. Persist previous_response_id on the thread         │     │
+│              └────────────┬───────────────────────────────────────────┘     │
+│                           │                                                 │
+│                ┌──────────▼─────────────┐                                   │
+│                │     MCPClientPool      │  one warm stdio subprocess        │
+│                │  (host-scoped, lazy)   │  per server, multiplexed          │
+│                └─────────┬──────────────┘  across all conversation threads  │
+│                          │                                                  │
+│         ┌────────────────┼────────────────────────────────────┐             │
+│         ▼                ▼                ▼                   ▼             │
+│   ┌──────────┐    ┌────────────┐   ┌────────────┐   ┌──────────────────┐    │
+│   │ workiq   │    │   m365     │   │ utility    │   │ per-skill server │    │
+│   │ MCP srv  │    │  MCP srv   │   │  MCP srv   │   │ (e.g. rfp_eval/  │    │
+│   │ (shared) │    │  (shared)  │   │  (shared)  │   │  mcp_server/)    │    │
+│   └────┬─────┘    └─────┬──────┘   └──────┬─────┘   └──────┬───────────┘    │
+└────────┼────────────────┼─────────────────┼────────────────┼────────────────┘
+         │                │                 │                │
+         ▼                ▼                 ▼                ▼
+   WorkIQ CLI        Graph + ACS        in-process    FoundryIQ + Fabric
+   (M365 data)       (mail / docs)      utilities     (RFP knowledge)
+```
+
+### What sits where
+
+| Component | Module | Role |
+|---|---|---|
+| Agent core | [`core/agent_core.py`](src/hub_cowork/core/agent_core.py) | Router, skill loader, `MCPClientPool` registration, the `requires_action` execution loop |
+| MCP client pool | [`core/mcp_client_pool.py`](src/hub_cowork/core/mcp_client_pool.py) | Lazy spawn of MCP server subprocesses, multiplexed calls, progress-notification forwarding |
+| MCP server runtime | [`mcp_servers/_runtime.py`](src/hub_cowork/mcp_servers/_runtime.py) | Shared stdio MCP server entrypoint used by every server module |
+| Auth | [`core/auth_credential.py`](src/hub_cowork/core/auth_credential.py) | WAM-broker-first single Entra credential, parented to the pywebview HWND |
+| Conversation state | [`core/conversation_thread.py`](src/hub_cowork/core/conversation_thread.py) | The `ConversationThread` dataclass — `previous_response_id`, status, progress/code logs, source, HITL correlation tag |
+| Thread registry | [`core/thread_manager.py`](src/hub_cowork/core/thread_manager.py) | Thread-safe registry, observer pattern, `current_thread_id` ContextVar |
+| Executor pool | [`core/thread_executor.py`](src/hub_cowork/core/thread_executor.py) | One daemon worker per active conversation, idle-shutdown |
+| Persistence | [`core/thread_store.py`](src/hub_cowork/core/thread_store.py) | `LocalJsonThreadStore` with debounced atomic writes |
+| Hub config | [`core/hub_config.py`](src/hub_cowork/core/hub_config.py) | Defaults ⊕ user overrides + `_env_overrides` env editor support |
+| Service status | [`core/service_status.py`](src/hub_cowork/core/service_status.py) | Per-service reachability, passive + active probes |
+| Computer-Use harness | [`core/computer_use.py`](src/hub_cowork/core/computer_use.py) | Generic Azure OpenAI gpt-5.4 + Playwright Chromium loop (used by `shelf_watch`) |
+| Desktop host | [`host/desktop_host.py`](src/hub_cowork/host/desktop_host.py) | WS + HTTP servers, pywebview window, tray, Redis bridge wiring |
+| Console host | [`host/console.py`](src/hub_cowork/host/console.py) | Terminal REPL — same agent core, no UI, no Redis bridge |
+| Redis bridge | [`host/redis_bridge.py`](src/hub_cowork/host/redis_bridge.py) | Teams remote-message inbox/outbox, classifier, per-user gate, `#thread-xxxx` correlation |
+
+---
+
+## How MCP is wired (the important nuance)
+
+Tools are not loose Python modules with a `SCHEMA` dict and a `handle()` function. They are **MCP servers** — the same Model Context Protocol used by Claude Cowork. Each server is a subprocess; each tool is a `@mcp.tool`-style function inside one of those subprocesses.
+
+This buys us three things at once:
+
+1. **Process isolation.** A buggy tool can crash its server without taking the agent down.
+2. **A clean future migration to Azure Container Apps.** When a server moves to ACA, `skill.yaml` flips one line (stdio → streamable HTTP); skill code, tool code, and the agent loop are unchanged.
+3. **Multi-language tools (eventually).** Any language that speaks MCP can host a Hub Cowork tool — today they're all Python because that's what we have.
+
+### …but watch out for the subtlety
+
+You will look at `src/hub_cowork/mcp_servers/` and see Python files that look like ordinary modules. Where is the protocol?
+
+The protocol code lives in [`mcp_servers/_runtime.py`](src/hub_cowork/mcp_servers/_runtime.py). It imports `mcp.types`, `mcp.server.lowlevel.Server`, and `mcp.server.stdio.stdio_server` from the official `mcp` Python package and exposes a `serve(...)` helper. Every other folder under `mcp_servers/` (`workiq/`, `m365/`, `utility/`) and every per-skill `mcp_server/` folder is a thin manifest that lists its tools and calls `serve(...)`. That's the wire-level MCP server.
+
+We use the **lowlevel** `mcp.server.lowlevel.Server` rather than `FastMCP` on purpose: FastMCP derives the JSON Schema from Python type hints via Pydantic, which would silently flatten our existing rich parameter schemas (descriptions, enums, nested objects). The lowlevel server lets us advertise the EXACT same `SCHEMA["parameters"]` dict the model has been working with — bit-for-bit contract preservation.
+
+### The most important runtime fact about MCP here
+
+**Stdio MCP servers are NOT registered with the Azure OpenAI Responses API as native `mcp` tools.** The Responses API's native `mcp` tool type only accepts **remote** servers reachable by URL (streamable HTTP / SSE). A local stdio subprocess on the user's machine is unreachable from Azure cloud, full stop.
+
+So the wiring is:
+
+1. **At skill-start**, `agent_core` calls MCP `tools/list` on every server the skill connects to. The pool collects every tool's name, description, and input schema.
+2. **Each MCP tool is registered with the Responses API as an ordinary function tool** (`type: "function"`) in the `tools=[...]` payload of `responses.create(...)`. Description and parameters come straight from the MCP advertisement.
+3. **When the model returns `requires_action`**, the agent loop looks up which server owns the requested tool, calls `pool.call(server, tool_name, args)`, awaits the JSON result, and submits it as a tool output. The Responses API never knows MCP exists on the wire — from its perspective every call is a function call.
+4. **MCP `notifications/progress`** received from the server during the call are forwarded to `on_progress(...)` in real time; they do not flow through the Responses API.
+
+When a server eventually moves to ACA-hosted streamable HTTP, we'll have a per-server choice: keep it client-dispatched (the pool grows an HTTP branch), or hand it to the Responses API as a native `{type: "mcp", server_url: ...}`. Until then, the pool is the only path tool calls take.
+
+### The pool is host-scoped, not thread-scoped
+
+`MCPClientPool` lives in `agent_core` and is shared by every conversation thread. **One subprocess per server name, multiplexed across all calls.** A long-running RFP brief in thread A and a fast Q&A in thread B share the same warm `workiq` server subprocess concurrently. There is never one-subprocess-per-call.
+
+### Auth crosses the boundary via the on-disk MSAL cache, not via the wire
+
+MCP server subprocesses do not receive credentials over the MCP transport. They call `get_credential()` from [`core/auth_credential.py`](src/hub_cowork/core/auth_credential.py) themselves and silently mint scope-specific tokens from the same `~/.hub-cowork/`-rooted MSAL cache the host wrote at sign-in. **Never construct credentials in a tool. Never accept tokens as arguments.**
+
+### Inspecting the wire
+
+You can run any one server module standalone and speak MCP at it:
+
+```powershell
+python -m hub_cowork.mcp_servers.utility
+# pipe in an MCP `initialize` JSON-RPC frame; it responds on stdout
+```
+
+This is how you verify a tool's `tools/list` advertisement looks the way the model will see it.
+
+---
+
+## Built-in skills
+
+Each skill is a folder under `src/hub_cowork/skills/` containing `skill.yaml` (config) + `SKILL.md` (system prompt) + optional `mcp_server/` (skill-local tools).
+
+| Skill | Tier | Queued | What it does |
+|---|---|---|---|
+| **`engagement_agenda`** | reasoning | yes | Single-skill, multi-phase workflow. Finds briefing calls, confirms with user (HITL), reads meeting notes, classifies engagement type, builds a detailed agenda table, publishes to Word in OneDrive. Replaces the legacy 4-phase chain. |
+| **`agenda_repurpose`** | reasoning | yes | Retrieve an existing agenda, collect new customer details, produce a repurposed Word document. |
+| **`meeting_invites`** | reasoning | yes | From a published agenda, filter speakers, resolve their emails, send calendar invites via ACS. |
+| **`rfp_evaluation`** | reasoning | yes | Pull an RFP from email, parallel-fan-out to FoundryIQ (testimonials) and Fabric Data Agent (structured project history), synthesise a Bid Intelligence Brief, save to OneDrive, share with the team. |
+| **`shelf_watch`** | reasoning | yes | Single-tool computer-use workflow. SKU plausibility check → discovery sweep across retailers (vision-LLM triage of result pages) → variant disambiguation HITL → deep scrape of confirmed PDPs → Word report with vs-Last-Run delta. |
+| **`qa`** | fast | yes | Conversational Q&A about M365 data with per-thread history. |
+| **`task_status`** | fast | no | Reports current thread progress and active-thread count — runs on the SYSTEM pseudo-thread so it answers instantly even while a real task is in flight. |
+| *(router direct)* | fast | no | Greetings and small talk — classified as `"none"` and answered by the router itself. No skill is invoked. |
+
+**Queued** = serializes on the conversation's own executor thread. Non-queued skills run on the SYSTEM pseudo-thread immediately.
+
+### Where each skill's tools live
+
+```
+src/hub_cowork/
+├── mcp_servers/                    # shared MCP servers (used by ≥2 skills)
+│   ├── workiq/                     # query_workiq
+│   ├── m365/                       # send_email, create_word_doc, resolve_speakers
+│   ├── utility/                    # log_progress, get_hub_config, get_task_status
+│   ├── _runtime.py                 # the actual MCP wire-protocol layer
+│   └── _tool_result.py             # standard result envelope
+└── skills/
+    ├── engagement_agenda/          # tools live in shared servers — no local mcp_server
+    ├── agenda_repurpose/
+    ├── meeting_invites/
+    │   └── mcp_server/tools/       # create_meeting_invites
+    ├── rfp_evaluation/
+    │   └── mcp_server/tools/       # search_foundryiq, query_fabric_agent,
+    │                               # create_rfp_brief_doc, share_onedrive_document,
+    │                               # create_calendar_reminder
+    ├── shelf_watch/
+    │   └── mcp_server/tools/       # shelf_watch_run + private _compare/_discover/_memory/_report/_session
+    ├── qa/
+    └── task_status/
+```
+
+---
+
+## The two clouds — M365 + Azure
+
+Hub Cowork bridges two Microsoft clouds with the user's **Microsoft Entra** identity flowing on-behalf-of across both:
 
 **Microsoft 365 cloud — the user's work intelligence**
 
-- **WorkIQ** runs as a **CLI on the local computer** and is the backbone of the user's identity for everything that follows. Once the user signs in (interactive browser flow, persistent token cache), the same Entra credential is shared with Azure OpenAI, ACS, Redis, and every downstream tool — one sign-in, no `az` CLI subprocesses, no `DefaultAzureCredential` chain.
-- Through WorkIQ, the agent reads the user's **calendars, emails, OneDrive, SharePoint, and contacts** with their own permissions.
+- **WorkIQ** runs as a CLI on the local computer and is the backbone of the user's identity for everything that follows. Once the user signs in (WAM broker, persistent token cache), the same Entra credential is shared with Azure OpenAI, ACS, Redis, FoundryIQ, Fabric, and every MCP server subprocess.
+- Through WorkIQ, the agent reads the user's calendars, emails, OneDrive, SharePoint, and contacts with their own permissions.
 
 **Azure cloud — reasoning, knowledge, and structured insight**
 
-- **Azure OpenAI Responses API** — the autonomous reasoning core that orchestrates the multi-step agent loop via function calling.
-- **FoundryIQ** — an **Agentic RAG** over **customer testimonials from past engagements**. The testimonial documents are uploaded to **Azure Blob Storage** and indexed into FoundryIQ, which the agent queries to surface relevant prior-customer voice when evaluating a new RFP.
-- **FabricIQ / OneLake** — holds the **structured artefacts** from past projects (risks, costs, timelines, KPIs). A **Fabric Data Agent** is built on top of OneLake to expose this data through a natural-language interface.
-- **Fabric Data Agent — direct call** — the local agent calls the Fabric Data Agent's **published OpenAI-compatible Assistants endpoint** (`/aiassistant/openai`) directly, with a Fabric-scoped Entra bearer token. An earlier design routed this through a Microsoft Foundry Agent that wrapped Fabric as a connected tool; that indirection added 10–15 minutes of latency and frequent timeouts, so it has been removed in favour of the direct call.
+- **Azure OpenAI Responses API** — the autonomous reasoning core that orchestrates the multi-step agent loop via function calling. Two model deployments: a reasoning model (e.g. `gpt-5.2`) and a fast model (e.g. `gpt-5.4-mini`).
+- **FoundryIQ** — Agentic RAG over customer testimonials from past engagements (Azure Blob Storage → Azure AI Search). Used by the RFP skill.
+- **Fabric Data Agent** — natural-language interface over OneLake-resident structured project data (risks, costs, timelines, KPIs). Called directly via its OpenAI-compatible Assistants endpoint with a Fabric-scoped Entra bearer token.
+- **Azure Communication Services** — calendar invite email, used by `meeting_invites`.
+- **Azure Managed Redis (cluster mode, optional)** — Teams remote-message inbox/outbox bridge. Passwordless Entra ID via `redis-entraid` credential provider.
 
-**Identity flow** — The user's Entra token issued at WorkIQ sign-in is propagated **on behalf of the user** to Azure OpenAI, FoundryIQ, the Fabric Data Agent, ACS, and Azure Managed Redis (via `redis-entraid`). Every call into both clouds runs with the user's own permissions; the agent never holds a shared service principal.
+The user's Entra token issued at sign-in is propagated on-behalf-of to all of the above. The agent never holds a shared service principal.
 
 ---
 
-## Built-in Skills
+## Per-conversation concurrency
 
-Hub Cowork is **skills-driven** — each capability is a declarative YAML file rather than hardcoded logic.
+Hub Cowork is single-process but multi-threaded. Every chat tab is its own `ConversationThread` with its own Responses-API context (its own `previous_response_id`). You can be running an RFP brief in tab A while asking a Q&A question in tab B — they execute in parallel.
 
-| Skill | Model | Queued | What it does |
-|---|---|---|---|
-| **Meeting Invites** (`meeting_invites`) | full | yes | Autonomous workflow: retrieve agenda → filter speakers → resolve emails → send calendar invites via ACS |
-| **Engagement Briefing** (`engagement_briefing`) | full | yes | Phase 1 of the agenda pipeline: locate briefing calls, **confirm selection with user** (HITL), retrieve notes, extract metadata. Auto-chains → Goals |
-| **Engagement Goals** (`engagement_goals`) | full | yes | Phase 2: extract and segment customer goals from briefing notes. Auto-chains → Agenda Build |
-| **Engagement Agenda Build** (`engagement_agenda_build`) | full | yes | Phase 3: build a detailed agenda markdown table with time slots, speakers, descriptions. Auto-chains → Publish |
-| **Engagement Agenda Publish** (`engagement_agenda_publish`) | full | yes | Phase 4: create a Word document from the agenda and save to the configured output folder (OneDrive-synced) |
-| **Agenda Repurpose** (`agenda_repurpose`) | full | yes | Conversational: retrieve an existing agenda, collect new customer details (name, date, venue), produce a repurposed Word document |
-| **RFP Evaluation** (`rfp_evaluation`) | full | yes | Retrieve an RFP via WorkIQ, consult FoundryIQ + Fabric Data Agent, synthesise a Bid Intelligence Brief, save to OneDrive, share with the team |
-| **Shelf Watch** (`shelf_watch`) | full | yes | Single-tool computer-use skill driven by `shelf_watch_run`. The tool owns all flow control — SKU plausibility check, **discovery sweep** (gpt-5.4 + Playwright Chromium searches each retailer; a vision LLM triages the result page into up to N matching variants per retailer, default 3, see `shelf_watch_max_variants_per_retailer`), match-score gating (strong ≥ 80%, borderline 40–79%), variant disambiguation prompting, and **deep scrape** (per confirmed variant: navigate to the PDP, vision LLM extracts price, MRP, EMI, exchange offer, bank offers, delivery, seller, warranty, rating, and category-specific specs auto-planned per SKU). Variant-aware "vs Last Run" deltas. Persists snapshot to OneDrive, renders a Word report with verdict line. The tool returns `needs_plausibility_confirmation`, `needs_disambiguation`, `complete`, or `cancelled` envelopes; the skill is a thin persona that translates the user's reply into a structured `user_choice`. |
-| **Q&A** (`qa`) | mini | yes | Conversational Q&A about M365 data with per-thread history |
-| **Task Status** (`task_status`) | mini | no | Report current thread progress and active-thread count — responds instantly even while a task is running |
-| *(Router direct)* | mini | no | Greetings and small talk — handled by the router (`"none"` classification) without invoking a skill |
-
-**Queued** refers to per-thread serialization: a queued skill runs on its conversation's own executor thread (so it doesn't block other conversations); a non-queued skill runs immediately on the SYSTEM pseudo-thread.
-
-### Engagement Agenda Workflow — Autonomous 4-Phase Skill Chain
-
-```
-  User: "create an agenda for Contoso"
-    │
-    ▼
-  Phase 1: engagement_briefing  (conversational, HITL)
-    │  Turn 1: Find briefing calls → present → [AWAITING_CONFIRMATION]
-    │          ↳ thread status → awaiting_user, executor idles, state persisted
-    │  Turn 2+: User confirms/corrects  (can arrive locally OR via Teams reply)
-    │           Retrieve notes → extract metadata
-    │  next_skill: engagement_goals
-    ▼
-  Phase 2: engagement_goals
-    │  Extract & segment customer goals from notes
-    │  next_skill: engagement_agenda_build
-    ▼
-  Phase 3: engagement_agenda_build
-    │  Load goals + hub config → build agenda table
-    │  Map goals to sessions, assign speakers, compute time slots
-    │  next_skill: engagement_agenda_publish
-    ▼
-  Phase 4: engagement_agenda_publish
-    │  Create Word doc via python-docx, save to agenda_output_folder
-    ▼
-  Complete agenda displayed in UI + .docx on disk
-```
-
-**Skill chaining** — Driven by the `next_skill` field in each YAML. On normal completion, `agent_core` invokes the next phase with the completion text as input. Control flow markers in the final text alter this:
-
-| Marker | Effect |
+| Layer | What happens |
 |---|---|
-| *(none)* | Chain to `next_skill` if configured |
-| `[STOP_CHAIN]` | Halt chaining, clear thread's active session, return text as-is (used to gate on errors — e.g., no briefing calls found) |
-| `[AWAITING_CONFIRMATION]` | Pause for user input. Thread status → `awaiting_user`, marker stripped, no chaining. Next message to the same thread resumes the skill. |
+| `ThreadManager` | Thread-safe registry of `ConversationThread` objects. Observer pattern for UI broadcast. Owns the `current_thread_id` `ContextVar` so logs and progress events route to the correct chat panel. |
+| `ExecutorPool` | One daemon `_ThreadWorker` per active conversation. Workers idle-shut-down after a configurable interval. Each worker sets `current_thread_id` before dispatching. |
+| `LocalJsonThreadStore` | Debounced atomic writes under `~/.hub-cowork/threads/{active,archive}/`. Threads survive restart and resume from `previous_response_id`. |
+| `MCPClientPool` | **Host-scoped, not thread-scoped.** One subprocess per server name, multiplexed across all conversation threads. |
 
-**Active session lives on the ConversationThread** (`thread.active_session`), not a global — so multiple parallel threads can each be awaiting confirmation on different skills without interfering.
-
-**Inter-phase context** — Passed via the `engagement_context` tool, which reads/writes JSON under `~/.hub-cowork/engagement_context/<customer>.json`. Each phase appends its output (metadata, goals, agenda) to the shared file.
-
-**Hub configuration** — Phase 3 reads default session start time and speaker-by-topic mapping via `get_hub_config`. Users edit these from the kebab (⋮) menu → **Settings** in the topbar.
-
-**Engagement type detection** — Phase 1 classifies as `ADS`, `RAPID_PROTOTYPE`, `BUSINESS_ENVISIONING`, `SOLUTION_ENVISIONING`, `HACKATHON`, or `CONSULT`. Phase 3 applies type-specific agenda patterns.
+A SYSTEM pseudo-thread (`thread_id == "system"`) handles cross-task questions ("what threads do I have running?"). It is never persisted and never accumulates `previous_response_id` — every system query is one-shot. This is why `task_status` can answer instantly even while a real task is in flight.
 
 ---
 
-### Shelf Watch — Two-Pass Computer-Use Skill (Azure OpenAI gpt-5.4 + Playwright)
+## Teams remote access (optional)
 
-A different shape of skill: instead of querying a backend API, the agent **drives a real Chromium browser** to read public retail product pages and extract pricing intelligence. The pattern generalizes beyond retail — any time a workflow has to read information from a website that has no API (competitor sites, partner portals, regulatory filings, broker dashboards), the same harness applies.
+When `AZ_REDIS_CACHE_ENDPOINT` is set, a separate **Azure Container App** ([workiq-agent-remote-client](https://github.com/sansri/workiq-agent-remote-client), built on the **Microsoft 365 Agents SDK** and fronting an **Azure Bot Service** channel) bridges Microsoft Teams to the agent via Azure Managed Redis streams.
 
-**Why two passes?** The Computer-Use model (`gpt-5.4`) is post-trained for action efficiency — it terminates the loop as soon as it believes the task is "done", which means in practice it skips most extraction work even when the data is on screen. We separate the concerns:
+The user fires off a workflow from Teams on their phone, closes the laptop lid, and gets the result back asynchronously when the workflow completes — because the local agent runs autonomously in the system tray.
 
-1. **Pass 1 — Navigation (CUA)** drives the browser, scrolls the entire PDP, and produces a complete set of viewport screenshots. It is told NOT to extract anything; its only success criterion is "DONE" / "BLOCKED &lt;reason&gt;".
-2. **Pass 2 — Vision extraction (`gpt-5`)** receives all the captured screenshots in one shot and emits the strict JSON schema. No action loop, no early-exit incentive — pure structured reading.
+Three mechanisms keep multi-thread remote traffic predictable:
 
-**Why a discovery turn?** A single user query like "LG 32-inch HD LED TV" can match many catalogue entries on each retailer. Letting the navigator pick "the best one" silently risks landing on the wrong product (a 55-inch instead of a 32-inch, a Smart instead of HD, an OLED instead of LED). The skill instead does a cheap **discovery sweep first** — it lists what each retailer has and asks the user which variants to deep-scrape. When every (SKU, retailer) has 0 or 1 strong match, the tool skips the ask and proceeds straight to scraping.
+1. **Inbox classifier** (`agent_core.classify_inbox`) — every inbound Teams message is classified `new`, `existing`, or `system`. Strong signals bias toward `existing` when the user is replying to a multi-field question, numbered options, or a yes/no confirmation. Fast-path: if the relay supplies a `thread_id` hint extracted from the `#thread-xxxx` correlation tag, the classifier verdict for that thread is honored without an LLM call.
+2. **Per-Teams-user gate** — for `new` classifications only, if the same Teams user already has an in-flight thread (`running` or `awaiting_user`, `source=="remote"`), the new thread is rejected with an outbox message tagged to the blocking thread's correlation. `existing` and `system` bypass the gate so HITL replies and status checks are never blocked.
+3. **`#thread-xxxx` correlation tags** — every outbound Teams reply is prefixed with the thread's `hitl_correlation_tag`. Users keep the tag in their Teams reply to deterministically route follow-ups; the relay strips the tag from user-visible text and forwards it as a structured hint.
 
-**One tool, deterministic flow.** Earlier versions of this skill exposed three separate tools to the LLM (`discover_shelf_variants`, `compare_shelf_prices`, `build_shelf_report`) and asked the skill prompt to drive the state machine — turn detection, score gating, variant filtering, the `[AWAITING_CONFIRMATION]` dance. That worked but was fragile: every flow change meant re-engineering a multi-page prompt. The current version collapses the entire workflow into a single tool, `shelf_watch_run`, that returns one of four `stage` envelopes. The skill prompt is now a thin persona whose only job is to render envelopes as conversation and translate the user's reply into a structured `user_choice` token. State across turns lives in a small per-thread session file managed by `_session.py`.
-
-```
-  User: "shelf watch on LG 32 inch HD LED TV"
-    │
-    ▼
-  Skill calls shelf_watch_run(skus=[...], retailers=[...], headless=False)
-    │
-    ├── (optional) PLAUSIBILITY CHECK
-    │     small-model sanity check on each SKU string. If any look implausible
-    │     ("LG HD LED 65 inch TV" — 65" panels are 4K UHD), tool returns:
-    │        {stage: "needs_plausibility_confirmation",
-    │         concerns: [{sku, issue, suggested}, ...]}
-    │     → skill renders concerns, asks: accept / keep / cancel
-    │     → next call: user_choice=accept_suggestions|keep_original|cancel
-    │
-    ├── DISCOVERY SWEEP  (per SKU × retailer; via `_discover.py`)
-    │     ├── PASS 1: CUA → homepage → search → scroll results page → DONE
-    │     │   (no PDP click; saves screenshots of the result grid)
-    │     └── PASS 2: vision LLM triage
-    │         ├─ apply RELEVANCE GATE (brand + size + capacity + model line)
-    │         └─ return up to N matching titles with match_pct + `gaps`
-    │            (N defaults to `shelf_watch_max_variants_per_retailer`, default 3)
-    │
-    ├── MATCH-SCORE GATING
-    │     strong ≥ 80%, borderline 40–79%. If every entry has 0 matches OR
-    │     exactly one strong match → auto-proceed to deep scrape. Otherwise
-    │     tool returns:
-    │        {stage: "needs_disambiguation",
-    │         summary: [{sku, retailers: [{label, strong, borderline}]}],
-    │         all_borderline_skus: [...], default_variant_count: N}
-    │     → skill renders summary grouped by SKU, asks:
-    │        proceed | include_borderline | top_only | custom | cancel
-    │     → next call: user_choice + (optional) selected_variants
-    │
-    ├── _plan_attributes(sku)   (CHAT_MODEL_SMALL — once per SKU, cached across variants)
-    │      → {category, attributes:[{key,label,hint}, …]}
-    │
-    ├── DEEP SCRAPE  (per confirmed variant; via `_compare.py`)
-    │     ├── PASS 1: CUA → click the variant whose title matches → scroll PDP → DONE
-    │     └── PASS 2: vision LLM extracts strict JSON
-    │         ├─ RELEVANCE GATE: verify product_title matches the requested variant;
-    │         │  emit {"blocked": true, "reason": "wrong_product: ..."} if not
-    │         └─ otherwise emit price/MRP/EMI/exchange/bank_offers/delivery/seller/
-    │            warranty/rating/category_attrs → `_normalize_payload()` reconciles
-    │            loose keys (₹ strings → ints, "Currently Unavailable" →
-    │            in_stock=false, unknowns → category_attrs blob)
-    │
-    ├── Persist snapshot to `<agenda_output_folder>/shelf-watch/runs/<ts>/`
-    │     plus rolling `history.json` (variant-aware key: sku||retailer||variant_title)
-    │
-    └── BUILD REPORT  (via `_report.py`)  → returns:
-          {stage: "complete", report_markdown: "...",
-           previous_run_timestamp, rows_captured, rows_blocked}
-          markdown + Word doc, grouped by SKU. Each variant is its own row;
-          retailer cell shows "Croma<br><sub>LG 80cm 32 HD LED TV</sub>".
-          Verdict line picks the cheapest in-stock variant. "vs Last Run"
-          delta is variant-aware.
-```
-
-The four submodules under `skills/shelf_watch/tools/` (all underscore-prefixed so the tool loader skips them) split the orchestrator's responsibilities: `_discover.py` runs the discovery sweep + triage, `_compare.py` runs the deep-scrape pass per variant, `_report.py` builds the markdown + Word report and persists run memory, and `_session.py` reads/writes the per-thread session state that lets `shelf_watch_run` resume across HITL pauses. Only `shelf_watch_run.py` is registered as an LLM-visible tool.
-
-**Why a generic harness?** [`core/computer_use.py`](src/hub_cowork/core/computer_use.py) owns Playwright, the Responses-API loop, screenshot capture, action execution, the domain allow-list, and safety-check handling. Skills supply only the natural-language `instructions`, the `start_url`, and the `allow_domains`. New computer-use skills (Best Buy comparison, FedEx tracking dashboard, FAA filings, anything) should never fork the harness — they write a new skill-local tool that builds different instructions and calls `run_computer_use_task(...)`. The two-pass extraction pattern (CUA navigates → vision LLM extracts) generalizes too: it lives in the skill, not the harness, so each skill chooses its own extraction schema.
-
-**Robustness measures baked into the harness:**
-
-| Concern | Fix |
-|---|---|
-| SPA pages screenshot before content hydrates | `wait_for_load_state("networkidle")` + 0.4s settle before every screenshot |
-| Hung SPA / infinite spinner causes Playwright `Page.screenshot` to time out | 12 s explicit timeout, then a retry with `animations="disabled"`, then a 1×1 blank fallback so the loop survives |
-| Small text (Indian retail prices) illegible after vision-token downsample | `device_scale_factor=2` — PNG bytes are 2880×1800 while click coords stay 1440×900 |
-| Browser permission popups (geolocation / notifications) occluding the page | Launch flags `--disable-notifications --deny-permission-prompts` + `permissions=[]` on the context |
-| Model navigates off the retailer's domain | Soft allow-list bounce — `go_back()` and let the model see the redirect |
-| Bot challenges / CAPTCHA pages | Detect `/captcha`, `/challenge`, Incapsula tokens — abort the run with `blocked: true` |
-| CUA model skips extraction even when data is on screen | **Two-pass split** — CUA navigates only; a dedicated vision LLM call extracts from the saved screenshots |
-| Navigator silently lands on the wrong size / brand / model | **Discovery+confirm turn** lists matches before scraping; **relevance gate** in the extractor returns `wrong_product` if the PDP doesn't match brand+size+capacity+model line |
-| Multiple catalogue matches per query collapsed to one arbitrary pick | **Variant fan-out** — discovery returns up to N variants per retailer; the skill asks the user which to keep, scraper emits one row per variant |
-| Opaque "Step N: executing 2 actions" progress | Action-summarizer turns each batch into `croma.com — typing "LG 32 inch", pressing Enter`; reasoning text passed through as `🧠 …` |
-| Model invents field names in returned JSON | Skill-side `_normalize_payload()` maps a synonym dict + coerces `₹69,900.00` strings to ints |
-| Per-SKU spec attributes (storage, chipset, capacity_kg, …) are category-dependent | `_plan_attributes(sku)` calls a small model once per SKU to derive the attribute set; the vision extractor pass receives those keys |
-
-**Hub-config keys** (all optional; documented under [Hub config (JSON)](#1-hub-config-json--application-data) below):
-
-| Key | Default | Effect |
-|---|---|---|
-| `shelf_watch_locale` | `en-IN` | Browser context locale — controls site region/language defaults |
-| `shelf_watch_timezone` | `Asia/Kolkata` | Browser context timezone — affects pricing pages with regional offers |
-| `shelf_watch_headless` | `false` | Hide the Chromium window. False is recommended; bot defenses challenge headless more aggressively |
-| `shelf_watch_retailers` | `{}` | Per-key merge over the shipped Croma + Reliance Digital registry. Each entry needs `label`, `start_url`, `allow_domains`; `search_hint` is optional |
-| `shelf_watch_max_variants_per_retailer` | `3` | Discovery cap — how many variants per retailer the triage LLM may surface for a single SKU. Capped at 10. Higher values give the user more choice but multiply scrape time linearly |
-
-Example — add Amazon India and tweak Croma's hint:
-
-```jsonc
-{
-  "shelf_watch_retailers": {
-    "croma": { "search_hint": "Use the magnifier icon at top-right." },
-    "amazon_in": {
-      "label": "Amazon India",
-      "start_url": "https://www.amazon.in/",
-      "allow_domains": ["amazon.in", "www.amazon.in", "m.media-amazon.com"]
-    }
-  }
-}
-```
-
-**Run memory** — each run writes `runs/run-<ts>.json` and updates `history.json` (capped at 20 runs, plus a `latest_per_pair` index keyed by `sku||retailer`). The next report's "vs Last Run" column reads from this index. Memory lives under `agenda_output_folder` when set (so it syncs to OneDrive automatically), otherwise `~/Documents/hub-cowork-agenda-docs/shelf-watch/`.
+Redis keys are namespaced by `REDIS_NAMESPACE` (default `hub-cowork`) so multiple Hub Cowork forks/deployments can share one Redis cluster without colliding.
 
 ---
 
-## Classifier, Gate, and HITL Correlation
+## Authentication
 
-Three mechanisms keep multi-thread remote traffic predictable.
+Hub Cowork is a **multi-tenant** desktop agent: it talks to Azure OpenAI / ACS / WorkIQ in the user's home tenant (`AZURE_TENANT_ID`) and to FoundryIQ + Fabric Data Agent in a separate resource tenant (`RESOURCE_TENANT_ID`) where the user is a guest. To make this look and feel native — and silent on every restart — the auth stack is:
 
-**1. Inbox classifier** (`agent_core.classify_inbox`)
+1. **WAM (Windows Account Manager) broker** via [`azure-identity-broker`](https://pypi.org/project/azure-identity-broker/) — the same native account picker Teams, Outlook, and Office show. **No browser opens.** The pywebview HWND is registered with `set_parent_window_handle()` so the picker is modal to our UI.
+2. **Classic `InteractiveBrowserCredential` fallback** when `pymsalruntime` is missing (macOS / Linux / older Windows).
+3. **`AuthenticationRecord` persisted to disk** for silent token refresh across restarts.
+4. **One credential, shared everywhere.** Built once in `agent_core` startup; published via `set_credential()`; consumed via `get_credential()` by the OpenAI client, `redis-entraid` provider, ACS sender, every MCP server subprocess (which reads the same on-disk MSAL cache), and the `outlook_helper`.
+5. **No `DefaultAzureCredential`. No `az` CLI subprocesses** (we run under `pythonw.exe` — no console).
 
-Every inbound Teams message is classified as `new`, `existing`, or `system`. The classifier receives a summary of every active thread, including both `last_user_excerpt` (120 chars) and `last_agent_excerpt` (240 chars). Strong signals bias toward `existing` when:
-
-- The user is replying to a question that listed multiple fields (e.g., "Customer is Texmaco, date 21 Apr, venue Teams virtual")
-- The user is replying to numbered options or a yes/no confirmation
-- Exactly one thread is `awaiting_user` (tie-breaker)
-
-Fast-path: if the Teams relay supplies a `thread_id` hint (extracted from the `#thread-xxxx` tag the agent prefixes to every outbound reply), the classifier verdict for that thread is honored without an LLM call.
-
-**2. Per-Teams-user gate** (`host/redis_bridge.py`)
-
-For any inbound message classified as `new`, the bridge checks whether the same Teams user already has an in-flight thread (`running` or `awaiting_user`, `source=="remote"`). If so, the new thread is rejected with an outbox message tagged to the blocking thread's correlation, asking the user to finish or cancel the active task first. `existing` and `system` classifications bypass the gate entirely — so HITL replies and status checks are never blocked.
-
-**3. `#thread-xxxx` correlation tags**
-
-Every outbound Teams reply is prefixed with the thread's `hitl_correlation_tag` (e.g., `#thread-ab12cd`). Users can keep this tag in their Teams reply to deterministically route follow-ups to the same thread. The Teams relay strips the tag from the user-visible text and forwards it as a structured hint.
+Sign-in is triggered from the Settings UI. The token blob is stored under the cache name `hub_cowork` so this fork doesn't fight a sibling fork over the same cached secret.
 
 ---
 
-## Adding Skills and Tools
+## Configuration & Settings UI
 
-### New tool
-
-Create `src/hub_cowork/tools/<name>.py` (shared) or `src/hub_cowork/skills/<group>/tools/<name>.py` (skill-local) exporting:
-
-```python
-SCHEMA: dict = {
-    "type": "function",
-    "name": "my_tool",
-    "description": "...",
-    "parameters": { ... },  # JSON Schema
-}
-
-def handle(arguments: dict, *, on_progress=None, workiq_cli=None, **kwargs) -> str:
-    ...
-```
-
-Files starting with `_` are skipped. Restart to pick up a new tool.
-
-### New skill
-
-Create `src/hub_cowork/skills/<name>.yaml` (standalone) or `src/hub_cowork/skills/<group>/<name>.yaml` (grouped chain) with these fields:
-
-| Field | Required | Type | Description |
-|---|---|---|---|
-| `name` | ✓ | `string` | Unique identifier — what the router emits when it classifies a request |
-| `description` | ✓ | `string` | Natural-language description used by the router. Prefix with `[INTERNAL` to exclude from routing (chain-only) |
-| `model` | ✓ | `"full"` \| `"mini"` | `full` → complex reasoning; `mini` → faster/cheaper |
-| `conversational` | ✓ | `bool` | `true` → retains per-thread history; required for HITL |
-| `queued` | ✓ | `bool` | `true` → runs on the conversation's executor thread; `false` → runs on SYSTEM pseudo-thread immediately |
-| `tools` | ✓ | `list[string]` | Tool names this skill can call |
-| `instructions` | ✓ | `string` | System prompt |
-| `next_skill` | — | `string` | Name of skill to chain to on normal completion |
-
-YAML-only edits (instructions, etc.) are picked up without restart. New files require a restart.
-
-Greetings and small talk are handled directly by the router (classified as `"none"`) without invoking any skill.
-
----
-
-## Hub Configuration & Settings UI
-
-There are **two distinct stores** of settings, used for different purposes:
+There are two distinct stores of settings:
 
 ### 1. Hub config (JSON) — application data
 
-Things the agent reads as structured data via the `get_hub_config` tool: hub name, default session start time, topic catalog, agenda output folder, agenda template path, etc.
+Things the agent reads as structured data via the `get_hub_config` tool: hub name, default session start time, topic catalog, agenda output folder, agenda template path, shelf-watch retailer registry.
 
 ```
-src/hub_cowork/assets/hub_config.default.json    ← Shipped defaults (in the wheel)
-~/.hub-cowork/hub_config.json                    ← User overrides (created on first Save)
+src/hub_cowork/assets/hub_config.default.json   ← Shipped defaults
+~/.hub-cowork/hub_config.json                   ← User overrides (created on first Save)
 
 hub_config.load() returns:  defaults  ⊕  user overrides   (user wins per-key)
 ```
 
 ### 2. Environment variables — endpoints, model names, secrets
 
-Things the code reads as `os.environ["..."]` at startup: Azure OpenAI endpoint, model deployment names, ACS endpoint, Redis endpoint, FoundryIQ search endpoint, Fabric Data Agent URL, RFP output folder, RFP share recipients, Graph credentials, etc.
+Three precedence layers, highest first:
 
-These come from **three layers**, applied in this precedence (highest first):
-
-| # | Source | Where it lives | When it wins |
+| # | Source | Where it lives | Wins when |
 |---|---|---|---|
-| 1 | `_env_overrides` (Settings UI) | `~/.hub-cowork/hub_config.json` under the `_env_overrides` key | Always wins if the value is a non-empty string |
-| 2 | User `.env` file | The current working directory when you launch the app | Wins over packaged defaults if layer 1 didn't set the key |
-| 3 | Packaged `.env.defaults` | `src/hub_cowork/assets/.env.defaults` (shipped in the wheel) | Last-resort fallback so the app boots even with no user setup |
+| 1 | `_env_overrides` (Settings UI) | `~/.hub-cowork/hub_config.json` under `_env_overrides` | Always wins if set to a non-empty string |
+| 2 | User `.env` file | CWD at launch | Wins over packaged defaults |
+| 3 | Packaged `.env.defaults` | `src/hub_cowork/assets/.env.defaults` | Last-resort fallback |
 
-**How it's wired** (see [`src/hub_cowork/__main__.py`](src/hub_cowork/__main__.py)):
+[`__main__.py`](src/hub_cowork/__main__.py) promotes `_env_overrides` into `os.environ` *before* importing `agent_core`, then calls `load_dotenv(.env, override=False)` and `load_dotenv(assets/.env.defaults, override=False)`. `override=False` is the key — once a value is in `os.environ` it cannot be downgraded by a lower-precedence source.
 
-```python
-_apply_env_overrides()   # 1. Promote _env_overrides into os.environ
-_load_env_files()        # 2. load_dotenv(.env, override=False)
-                         # 3. load_dotenv(assets/.env.defaults, override=False)
-```
-
-`override=False` is the key — once a value is in `os.environ` it cannot be downgraded by a lower-precedence source.
-
-### What goes where?
-
-| Setting | Where | Read by |
-|---|---|---|
-| `hub_name`, `topic_catalog`, `default_session_start_time`, `agenda_output_folder`, `agenda_template_path` | Hub config (top level of `hub_config.json`) | Skills, via `get_hub_config` tool |
-| `shelf_watch_locale`, `shelf_watch_timezone`, `shelf_watch_headless`, `shelf_watch_retailers`, `shelf_watch_max_variants_per_retailer` | Hub config (top level of `hub_config.json`) | `shelf_watch` skill, read directly by `_compare.py` and `_discover.py` under `skills/shelf_watch/tools/` |
-| `AZURE_OPENAI_*`, `ACS_*`, `AZURE_TENANT_ID`, `AZ_REDIS_CACHE_ENDPOINT`, `REDIS_*`, `FOUNDRYIQ_*`, `FABRIC_*`, `RESOURCE_TENANT_ID`, `GRAPH_*`, `RFP_OUTPUT_FOLDER`, `RFP_SHARE_RECIPIENTS`, `WORKIQ_PATH` | Env vars (any of the 3 layers above) | Anywhere via `os.environ`, plus `get_hub_config` (see consistency note) |
-
-### One consistent read path (consistency note)
-
-All callers — Python modules and skills alike — see env-var values from the same merged view, regardless of which layer set them:
-
-- **Python code** (e.g. `agent_core.py`, `redis_bridge.py`, `create_rfp_brief_doc.py`) reads `os.environ["FOO"]`. Because `__main__.py` promotes `_env_overrides` into `os.environ` *before* importing the agent host, every layer is visible through this one syscall.
-- **Skill instructions** that need a value through the LLM call the `get_hub_config` tool. That tool flattens any non-empty `_env_overrides` entries on top of the hub-config JSON before returning, so the LLM sees the same effective value the Python code does.
-
-**Net result:** there is exactly **one source of truth per env var**, computed at boot, regardless of whether the value originated in the Settings UI, a local `.env`, or the packaged defaults. No skill or module has its own fallback chain.
+**Net result:** there is exactly one source of truth per env var, computed at boot, regardless of which layer set it. The same merged view is visible to Python `os.environ` reads and to skill instructions via the `get_hub_config` tool (which flattens non-empty `_env_overrides` on top of the hub-config JSON before returning).
 
 ### Settings UI
 
-The kebab (⋮) **More** menu in the top-right of the topbar exposes **Settings**, **Restart agent**, **Skills**, and **About Hub Cowork**. The Settings modal has two sections:
+The kebab (⋮) menu in the top-right opens **Settings**, **Restart agent**, **Skills**, and **About Hub Cowork**. The Settings modal has two sections:
 
-- **Hub settings** — top-level keys in `hub_config.json` (hub name, default session start time, speakers by topic, agenda output folder, agenda template path).
-- **Environment variables** — the env editor. Every value typed here is saved to the `_env_overrides` map in `~/.hub-cowork/hub_config.json` and applied to `os.environ` on the next launch (the UI offers a one-click restart).
+- **Hub settings** — top-level keys in `hub_config.json` (hub name, session start time, speakers by topic, agenda/RFP output folders).
+- **Environment variables** — every value typed here is saved to `_env_overrides` and applied on the next launch (the UI offers a one-click restart). Hub-config edits are picked up live by the next `get_hub_config` call.
 
-After changing env values you need to restart so module-level reads (e.g. `ENDPOINT = os.environ[...]`) pick up the new values. Hub-config edits are picked up live by the next `get_hub_config` call.
+### Required env vars
 
----
+| Variable | Description |
+|---|---|
+| `AZURE_OPENAI_ENDPOINT` | Azure OpenAI resource endpoint |
+| `AZURE_OPENAI_CHAT_MODEL` | Reasoning model deployment name |
+| `AZURE_OPENAI_CHAT_MODEL_SMALL` | Fast model deployment name |
+| `AZURE_OPENAI_API_VERSION` | e.g. `2025-03-01-preview` |
+| `AZURE_TENANT_ID` | Home tenant ID for sign-in |
+| `ACS_ENDPOINT`, `ACS_SENDER_ADDRESS` | Azure Communication Services (meeting invites) |
 
-## Architecture
+### Optional env vars
 
-```
-┌───────────────────────────────────────────────────────────────────────────────┐
-│                              Windows 11 Desktop                               │
-│                                                                               │
-│  ┌──────────────────────┐     ┌───────────────────────────────────────────┐   │
-│  │  pywebview window    │◄───►│   WebSocket server  (ws://127.0.0.1:18080)│   │
-│  │  (chat_ui.html)      │     │   HTTP server       (http://127.0.0.1:18081)  │
-│  │                      │     │                                           │   │
-│  │ • Thread list pane   │     │  ┌─────────────┐   ┌────────────────────┐ │   │
-│  │ • Chat pane          │     │  │ Tool loader │   │  Skill loader      │ │   │
-│  │ • Progress/Logs pane │     │  │ tools/*.py  │   │  skills/**/*.yaml  │ │   │
-│  │ • Settings + env UI  │     │  └──────┬──────┘   └──────────┬─────────┘ │   │
-│  │ • Auth banner        │     │         │                     │           │   │
-│  └──────────────────────┘     │  ┌──────▼─────────────────────▼────────┐  │   │
-│                               │  │       Router (master agent)         │  │   │
-│  ┌────────────────────┐       │  │  — classifies local requests into   │  │   │
-│  │ System tray icon   │       │  │    skill | "none" (greeting)        │  │   │
-│  │ (Win32 ctypes)     │       │  └─────────────────┬───────────────────┘  │   │
-│  │ + red-dot badge    │       │                    │                      │   │
-│  │ on remote unreads  │       │              ┌─────▼─────────┐            │   │
-│  └────────────────────┘       │              │ ThreadManager │            │   │
-│                               │              │   observers,  │            │   │
-│  ┌─────────────────────┐      │              │  ContextVar   │            │   │
-│  │ Sign-in toasts only │      │              └─────┬─────────┘            │   │
-│  │ (winotify)          │      │                    │                      │   │
-│  └─────────────────────┘      │           ┌────────▼─────────────────────┐│   │
-│                               │           │   ExecutorPool               ││   │
-│                               │           │  one _ThreadWorker per       ││   │
-│                               │           │  active conversation; idle-  ││   │
-│                               │           │  shutdown; tags logs via     ││   │
-│                               │           │  current_thread_id CV        ││   │
-│                               │           └────────┬─────────────────────┘│   │
-│                               │                    │                      │   │
-│                               │   ┌────────────────▼──────────────────┐   │   │
-│                               │   │   Skill sub-agent execution       │   │   │
-│                               │   │   Azure OpenAI Responses API      │   │   │
-│                               │   │   — per-thread previous_response_id│  │   │
-│                               │   │   — autonomous tool-call loop     │   │   │
-│                               │   └─────────┬─────────┬───────────────┘   │   │
-│                               │             │         │                   │   │
-│                               │   ┌─────────▼─┐   ┌───▼──────────────┐    │   │
-│                               │   │ Tool layer│   │ Progress stream  │    │   │
-│                               │   │ ...       │   │ → UI (WS)        │    │   │
-│                               │   │           │   │ → thread.progress│    │   │
-│                               │   │           │   │ → Redis outbox   │    │   │
-│                               │   └─────────┬─┘   │ → thread_unread  │    │   │
-│                               │             │     │   (Teams → tray  │    │   │
-│                               │             │     │    badge)        │    │   │
-│                               │             │     └──────────────────┘    │   │
-│                               │   ┌─────────▼─────────────────────────┐   │   │
-│                               │   │    LocalJsonThreadStore           │   │   │
-│                               │   │   ~/.hub-cowork/threads/          │   │   │
-│                               │   │       active/   archive/          │   │   │
-│                               │   └───────────────────────────────────┘   │   │
-│                               └───────────────┬───────────────────────────┘   │
-│                                               │                               │
-│  ┌────────────────────────────────────────────▼─────────────────────────────┐ │
-│  │                      Redis bridge (optional)                             │ │
-│  │  • Polls {ns}:inbox:{email} via XREAD (blocking)                         │ │
-│  │  • classify_inbox → new | existing | system                              │ │
-│  │  • Per-user single-in-flight gate on "new"                               │ │
-│  │  • Writes {ns}:outbox:{email} with in_reply_to + #thread-xxxx prefix     │ │
-│  │  • {ns}:agents:{email} presence with TTL heartbeat                       │ │
-│  │  • redis-entraid credential provider, shared InteractiveBrowserCredential│ │
-│  └───────────────────────┬──────────────────────────────────────────────────┘ │
-└──────────────────────────┼────────────────────────────────────────────────────┘
-                           │
-          ┌────────────────▼──────────────────┐
-          │  Azure Managed Redis (cluster)    │
-          │  streams keyed by user email      │
-          └────────────────┬──────────────────┘
-                           │
-          ┌────────────────▼──────────────────┐
-          │  Part 2: workiq-agent-remote-     │
-          │          client (Teams relay)     │
-          │  — REDIS_NAMESPACE-aware          │
-          │  — extracts #thread-xxxx          │
-          └───────────────────────────────────┘
-
-          ┌───────────────────────────────────┐
-          │  WorkIQ CLI → M365 Graph          │
-          │  (Calendar / Email / Files /      │
-          │   Contacts / SharePoint)          │
-          └───────────────────────────────────┘
-
-          ┌───────────────────────────────────┐
-          │  Azure Communication Services     │
-          │  (calendar invite email)          │
-          └───────────────────────────────────┘
-
-          ┌───────────────────────────────────┐
-          │  RFP skill only (cross-tenant):   │
-          │   FoundryIQ · Fabric Data Agent   │
-          └───────────────────────────────────┘
-```
-
-### How it all fits together
-
-1. **Single-process launcher** (`python -m hub_cowork` → `hub_cowork/__main__.py` → `host/desktop_host.py::main`) — applies `_env_overrides` from the Settings UI, loads `.env` and packaged `.env.defaults`, starts the WebSocket/HTTP servers, system tray, optional Redis bridge, and enters the pywebview event loop.
-
-2. **WebSocket server (port 18080)** — JSON protocol, typed messages for threads, progress, logs, config, and remote-message notifications. See [WebSocket protocol](#websocket-protocol) below.
-
-3. **HTTP server (port 18081)** — Handles toast-click callbacks (`GET /show` brings up the pywebview window) for the few remaining toasts (sign-in, "already running").
-
-4. **pywebview UI** — a responsive 3-column desktop layout (Threads / Chat / Logs) plus dialogs:
-   - **Topbar**: title, four service-status pills (WorkIQ, FoundryIQ, FabricIQ, Teams Relay), the Sign-in button (only shown until auth completes), and a **kebab “More” (⋮) menu in the top-right** that opens **Settings**, **Restart agent**, **Skills**, and **About Hub Cowork**. A hamburger toggle on the left and a *Show logs* toggle on the right reveal the side panes when they collapse on narrow widths.
-   - **Threads pane (left)**: the always-pinned `System` thread on top, a `+ New task` button, a `Show archived` toggle, two checkbox filters (`Running` / `Completed`), the active and archived task lists, and a footer that shows the auth dot + signed-in user. The old per-row action buttons and standalone auth banner have been removed in favour of this cleaner layout.
-   - **Chat pane (centre)**: thread tag, title, status, and a small set of icon-only header actions — *Archive*, *Restore from archive*, *Clear conversation* (System thread only), and *Show logs* (toggles the right pane). User and assistant messages render as bubbles; agent progress / milestone events render as **persistent in-chat step cards** instead of a separate timeline.
-   - **Logs pane (right)**: a single Logs tab streaming the per-thread `code_log`. Collapsible on the desktop layout (`details-collapsed`); turns into an off-canvas overlay below 900px, with a backdrop that closes it on click. Below 700px the Threads pane also becomes an off-canvas overlay.
-   - **Composer**: textarea with auto-grow, Send button, and a Stop button that appears while a thread is running. A *composer notice* line above the input surfaces things like `awaiting_user` hints.
-   - **Config banner**: a dismissible banner at the top of the window appears when required env / config values are missing, with a one-click `Open Settings` shortcut.
-
-5. **Tool loader** — Imports all shared `*.py` in `src/hub_cowork/tools/` and all skill-local `skills/*/tools/*.py` at startup.
-
-6. **Skill loader** — Walks `src/hub_cowork/skills/**/*.yaml` and builds the router prompt from non-`[INTERNAL` descriptions.
-
-7. **Router (master agent)** — Classifies local requests. `"none"` → answered directly; otherwise → skill selection.
-
-8. **ThreadManager** — Thread-safe singleton. Stores `ConversationThread` objects in memory, exposes observer hooks, and owns the `current_thread_id` ContextVar and the `SYSTEM_THREAD_ID` constant.
-
-9. **ExecutorPool** — One daemon `_ThreadWorker` per active conversation. Each worker sets `current_thread_id` before dispatching, calls `agent_core.run_agent_on_thread(...)`, emits progress, and calls `on_thread_reply` for Redis outbox delivery. Workers shut down after a configurable idle period.
-
-10. **Skill sub-agents** — Azure OpenAI Responses API. Tool definitions + instructions drive the autonomous tool-call loop. `previous_response_id` is stored on the `ConversationThread` so every thread has its own LLM context.
-
-11. **Tool execution layer** — `query_workiq`, `log_progress`, `get_task_status`, `get_hub_config`, `create_word_doc`, `resolve_speakers`, `send_email` are shared; `engagement_context` (agenda chain), `create_meeting_invites` (meeting invites), `create_rfp_brief_doc` / `query_fabric_agent` / `search_foundryiq` / `share_onedrive_document` (RFP), and `shelf_watch_run` (shelf watch — single orchestrator over the private `_discover` / `_compare` / `_report` / `_session` helpers) are skill-local.
-
-12. **Computer-Use harness** ([`core/computer_use.py`](src/hub_cowork/core/computer_use.py)) — Generic Azure OpenAI gpt-5.4 + Playwright Chromium loop used by the `shelf_watch` skill. Owns the screenshot/action loop, key-mapping table, domain allow-list policing, and safety-check handling. Skills supply natural-language `instructions`, `start_url`, and `allow_domains` only.
-
-12. **LocalJsonThreadStore** — Debounced atomic JSON writes under `~/.hub-cowork/threads/{active,archive}/`. A `ThreadArchiveStore` Protocol is reserved for a future Cosmos DB backend.
-
-13. **Redis bridge** (optional) — Inbox poller, 3-way classifier, per-user gate, outbox writer with `in_reply_to` + `#thread-xxxx` correlation, presence key with TTL heartbeat. Shares the agent's credential — no `DefaultAzureCredential` chain and no `az` CLI subprocesses under `pythonw.exe`.
+| Variable | Used by |
+|---|---|
+| `AZ_REDIS_CACHE_ENDPOINT`, `REDIS_NAMESPACE`, `REDIS_SESSION_TTL_SECONDS` | Teams remote bridge |
+| `WORKIQ_PATH` | If WorkIQ CLI is not on `PATH` |
+| `FOUNDRYIQ_*`, `FABRIC_DATA_AGENT_URL`, `FABRIC_AUTH_MODE`, `RESOURCE_TENANT_ID` | RFP skill |
+| `RFP_OUTPUT_FOLDER`, `RFP_SHARE_RECIPIENTS` | RFP skill |
+| `GRAPH_*` | Optional app-cred fallback for OneDrive sharing |
+| `AGENT_TIMEZONE` | IANA TZ override (auto-detected otherwise) |
 
 ---
 
-## Project Structure
+## Project structure
 
 ```
 hub-cowork/
-├── pyproject.toml               # Package definition, dependencies, console + gui scripts
-├── requirements.txt             # Pin list for editable dev installs
-├── README.md                    # You are here
-├── .env.example                 # Starter environment file
-├── favicon.svg
-│
-├── src/hub_cowork/
-│   ├── __init__.py
-│   ├── __main__.py              # `python -m hub_cowork` entry — applies env overrides
-│   │
-│   ├── core/                    # Pure logic, no I/O wiring
-│   │   ├── agent_core.py            # Router, classifier, skill/tool loaders, run_agent_on_thread / run_skill_on_thread, shared credential
-│   │   ├── conversation_thread.py   # ConversationThread dataclass (id, status, messages, progress_log, code_log, previous_response_id, active_session, hitl_correlation_tag, source, external_user)
-│   │   ├── thread_manager.py        # Registry singleton, observer pattern, current_thread_id ContextVar, SYSTEM_THREAD_ID
-│   │   ├── thread_executor.py       # ExecutorPool + _ThreadWorker (per-thread daemon, idle shutdown, thread_id tagging, on_thread_reply)
-│   │   ├── thread_store.py          # LocalJsonThreadStore (debounced atomic writes); ThreadArchiveStore Protocol
-│   │   ├── hub_config.py            # Config loader — merges shipped defaults with ~/.hub-cowork/hub_config.json
-│   │   ├── app_paths.py             # Central app-home + branding constants ("Hub Cowork", ~/.hub-cowork/)
-│   │   ├── service_status.py        # Per-service connectivity monitor (passive envelope tracking + background probes)
-│   │   ├── computer_use.py          # Generic Azure OpenAI gpt-5.4 + Playwright Chromium harness (used by shelf_watch)
-│   │   └── outlook_helper.py        # ACS email + .ics invite builder
-│   │
-│   ├── host/                    # Runtime hosts (UI, console, remote bridge, tray)
-│   │   ├── desktop_host.py         # WS+HTTP servers, pywebview UI, tray wire-up, ExecutorPool + Redis wiring
-│   │   ├── console.py               # Terminal REPL — no UI, no background mode (hub-cowork-console script)
-│   │   ├── redis_bridge.py          # Redis inbox poller, classifier, per-user gate, outbox writer, presence
-│   │   ├── tray_icon.py             # Pure Win32 tray via ctypes (own message pump thread); supports red-dot badge + tooltip count for unread Teams messages
-│   │   └── ui_actions.py            # Shared WS/UI action handlers (sign-in, config save, restart)
-│   │
-│   ├── tools/                   # Shared tools (auto-discovered)
-│   │   ├── query_workiq.py
-│   │   ├── log_progress.py
-│   │   ├── get_task_status.py
-│   │   ├── get_hub_config.py
-│   │   ├── create_word_doc.py
-│   │   ├── resolve_speakers.py
-│   │   └── send_email.py
-│   │
-│   ├── skills/                  # YAML skills + optional skill-local tools
-│   │   ├── qa.yaml
-│   │   ├── task_status.yaml
-│   │   ├── agenda_repurpose.yaml
-│   │   ├── hub_agenda_creation/
-│   │   │   ├── engagement_briefing.yaml     # Phase 1 (HITL)
-│   │   │   ├── engagement_goals.yaml        # Phase 2
-│   │   │   ├── engagement_agenda_build.yaml # Phase 3
-│   │   │   ├── engagement_agenda_publish.yaml # Phase 4
-│   │   │   └── tools/engagement_context.py
-│   │   ├── meeting_invites/
-│   │   │   ├── meeting_invites.yaml
-│   │   │   └── tools/create_meeting_invites.py
-│   │   ├── rfp_evaluation/
-│   │   │   ├── rfp_evaluation.yaml
-│   │   │   └── tools/
-│   │   │       ├── create_rfp_brief_doc.py
-│   │   │       ├── query_fabric_agent.py
-│   │   │       ├── search_foundryiq.py
-│   │   │       └── share_onedrive_document.py
-│   │   └── shelf_watch/             # Computer-Use skill (gpt-5.4 + Playwright)
-│   │       ├── shelf_watch.yaml
-│   │       └── tools/
-│   │           ├── shelf_watch_run.py       # Single LLM-visible orchestrator (plausibility → discovery → disambiguation → deep scrape → report)
-│   │           ├── _discover.py             # Discovery sweep + vision-LLM triage (private)
-│   │           ├── _compare.py              # Per-variant deep scrape + payload normalization (private)
-│   │           ├── _report.py               # Markdown + Word report with vs-Last-Run delta (private)
-│   │           ├── _session.py              # Per-thread HITL session state (private)
-│   │           └── _memory.py               # OneDrive-backed run snapshots + history.json (private; underscore-prefix → loader skips)
-│   │
-│   └── assets/                  # Shipped inside the wheel
-│       ├── .env.defaults            # Lowest-precedence env defaults
-│       ├── chat_ui.html             # Three-pane chat UI markup
-│       ├── chat_ui.css              # UI styles
-│       ├── chat_ui.js               # UI state, WebSocket client, renderers
-│       ├── hub_config.default.json  # Default hub settings
-│       ├── agent_icon.png
-│       └── agent_icon.ico
+├── pyproject.toml
+├── requirements.txt
+├── README.md                            ← you are here
+├── docs/
+│   ├── architecture.png
+│   ├── ui-architecture.md
+│   └── architecture/
+│       ├── SKILLS_DESIGN_PRINCIPLES.md  ← authoritative spec (the 14 non-negotiables)
+│       ├── AUTHORING_A_SKILL.md         ← practical recipe for adding a skill
+│       └── REARCHITECTURE_PLAN.md       ← migration audit trail
 │
 ├── scripts/
-│   ├── start.ps1                # Launch detached via pythonw
-│   ├── stop.ps1                 # Kill running instance(s)
-│   ├── restart.ps1              # Stop + start
-│   └── autostart.ps1            # Install/uninstall Windows login auto-start
+│   ├── start.ps1     restart.ps1     stop.ps1
+│   └── autostart.ps1
 │
-├── test-client/                 # Console REPL test client (simulates a Teams relay)
-│   ├── chat.py
-│   └── requirements.txt
+├── test-client/
+│   └── chat.py                          ← console REPL that simulates a Teams relay
 │
-└── docs/
-    └── architecture.png         # Solution architecture diagram
+└── src/hub_cowork/
+    ├── __main__.py                      ← `python -m hub_cowork` entry; applies env overrides
+    │
+    ├── core/                            ← runtime, no I/O wiring
+    │   ├── agent_core.py
+    │   ├── auth_credential.py
+    │   ├── conversation_thread.py
+    │   ├── thread_manager.py
+    │   ├── thread_executor.py
+    │   ├── thread_store.py
+    │   ├── mcp_client_pool.py
+    │   ├── hub_config.py
+    │   ├── service_status.py
+    │   ├── computer_use.py
+    │   ├── outlook_helper.py
+    │   └── app_paths.py
+    │
+    ├── host/                            ← runtime hosts
+    │   ├── desktop_host.py              ← WS + HTTP servers, pywebview, tray, Redis wiring
+    │   ├── console.py                   ← terminal REPL, no UI, no Redis
+    │   ├── redis_bridge.py              ← Teams inbox/outbox + classifier + per-user gate
+    │   ├── tray_icon.py                 ← Win32 ctypes tray with red-dot badge
+    │   └── ui_actions.py
+    │
+    ├── mcp_servers/                     ← shared MCP servers (the actual MCP wire layer)
+    │   ├── _runtime.py                  ← `serve(...)` — the lowlevel `mcp.server.Server`
+    │   ├── _tool_result.py              ← standard envelope helpers
+    │   ├── workiq/                      ← query_workiq
+    │   ├── m365/                        ← send_email, create_word_doc, resolve_speakers
+    │   └── utility/                     ← log_progress, get_hub_config, get_task_status
+    │
+    ├── skills/                          ← one folder per skill, auto-discovered
+    │   ├── engagement_agenda/   skill.yaml + SKILL.md
+    │   ├── agenda_repurpose/    skill.yaml + SKILL.md
+    │   ├── meeting_invites/     skill.yaml + SKILL.md + mcp_server/
+    │   ├── rfp_evaluation/      skill.yaml + SKILL.md + mcp_server/
+    │   ├── shelf_watch/         skill.yaml + SKILL.md + mcp_server/
+    │   ├── qa/                  skill.yaml + SKILL.md
+    │   └── task_status/         skill.yaml + SKILL.md
+    │
+    └── assets/
+        ├── chat_ui.html, chat_ui.css, chat_ui.js
+        ├── hub_config.default.json
+        └── .env.defaults
 ```
 
 ---
 
-## Getting Started
+## Getting started
 
 ### Prerequisites
 
-- **Windows 11** (Mac support exists but is untested)
+- **Windows 11** (Mac/Linux work for the core but tray + WAM are Windows-only)
 - **Python 3.12+**
-- **WorkIQ CLI** installed and on `PATH` (or `WORKIQ_PATH` set in `.env`)
-- **Azure OpenAI** resource with a full model (e.g., `gpt-5.2`) and a mini model (e.g., `gpt-5.4-mini`) deployed
-- **Azure Communication Services** resource (for meeting invites)
-- **Azure Managed Redis** (optional) — enables Teams remote access. Entra ID auth only (no API keys).
+- **WorkIQ CLI** on `PATH` (or `WORKIQ_PATH` set)
+- **Azure OpenAI** with a reasoning + fast model deployment
+- **Azure Communication Services** (for meeting invites)
+- **Azure Managed Redis** (optional — for Teams remote)
 
-### Installation
+### Install
 
 ```powershell
-# Clone
 git clone <repo-url>
 cd hub-cowork
 
-# Virtual env
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-
-# Install (editable, so edits to src/ take effect immediately)
 pip install -e .
 
-# Or: pin-for-pin install
-# pip install -r requirements.txt
-# $env:PYTHONPATH = "$PWD\src"
-
-# Configure
 copy .env.example .env
-# Edit .env with Azure endpoints, model names, tenant id, ACS, and (optional) Redis.
+# Fill in Azure endpoints, model names, tenant id, ACS, optional Redis.
 ```
 
-### Running
+### Run
 
 ```powershell
-# Headless production (no console window)
+# Headless (production) — no console window, runs under pythonw
 .\scripts\start.ps1
 
-# Force-restart
+# Stop / restart
+.\scripts\stop.ps1
 .\scripts\restart.ps1
 
-# Stop
-.\scripts\stop.ps1
-
-# Debug with console output
+# With console output (debug)
 python -m hub_cowork
 
-# Console REPL (no UI, no Redis bridge)
-hub-cowork-console     # or: python -m hub_cowork.host.console
+# Console REPL — same agent core, no UI, no Redis bridge
+hub-cowork-console
 ```
 
-When installed via `pip install -e .`, two console scripts are registered (see `pyproject.toml`):
+`pip install -e .` registers two console scripts in `pyproject.toml`:
 
-- `hub-cowork` — GUI launcher (no console window, equivalent to `pythonw -m hub_cowork`)
+- `hub-cowork` — GUI launcher (no console window)
 - `hub-cowork-console` — terminal REPL
 
 ### Auto-start at Windows login
 
 ```powershell
-.\scripts\autostart.ps1 install     # creates a VBScript launcher in the Startup folder
+.\scripts\autostart.ps1 install
 .\scripts\autostart.ps1 uninstall
 ```
 
 ---
 
-## Testing Remote Task Delivery
+## WebSocket protocol
 
-The `test-client/` folder contains a console REPL that simulates a remote sender by reading/writing the same Redis streams the Teams relay uses.
-
-### Prerequisites
-
-- Agent is running (`.\scripts\start.ps1`)
-- `AZ_REDIS_CACHE_ENDPOINT` set in `.env`
-- The test client reuses the agent's saved auth record at `~/.hub-cowork/auth_record.json`
-
-### Running
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-python test-client\chat.py
-```
-
-On startup the client authenticates, connects to Redis using the **same `REDIS_NAMESPACE`** as the agent, reads the presence key `{ns}:agents:{email}` to confirm the agent is online, then prompts `You >`.
-
-### What to test
-
-| Test | What happens |
-|---|---|
-| Type `hello` | Classifier → `system` → router handles as small talk → purple "remote" bubble in the UI + reply in the test client |
-| Type a business query | Classifier → `new` → gate check → new thread created → skill runs → outbox reply arrives with `#thread-xxxx` prefix |
-| Type another business query immediately | Gate rejects: "You already have a task in progress — reply in that thread or wait for it to finish" |
-| Reply to an `awaiting_user` thread (keep the `#thread-xxxx` tag) | Classifier fast-path via `thread_id` hint → `existing` → resumes the paused skill |
-| Ask `what's the status?` from the local UI while a remote task runs | Non-queued `task_status` skill reports live progress without interrupting |
-
----
-
-## WebSocket Protocol
-
-All messages are JSON with a `type` field. The UI and backend share the same protocol.
+All UI ↔ backend messages are JSON with a `type` field on `ws://localhost:18080`. Every invocation carries a `request_id` (`uuid.uuid4().hex[:8]`) used for correlation across WebSocket, UI, Redis outbox, and log entries.
 
 **Client → server:** `create_thread`, `send_to_thread`, `cancel_thread`, `list_threads`, `get_thread`, `archive_thread`, `unarchive_thread`, `list_archived_threads`, `delete_thread`, `system_query`, `task`, `open_file`, `signin`, `clear_history`, `get_logs`, `get_config`, `save_config`, `validate_speakers`, `restart`.
 
 **Server → client:** `threads_list`, `archived_threads_list`, `thread_created`, `thread_updated`, `thread_detail`, `thread_started`, `thread_progress`, `thread_completed`, `thread_error`, `thread_archived`, `thread_unarchived`, `thread_deleted`, `thread_unread`, `cancel_ack`, `log_entry`, `log_history`, `history_cleared`, `system_query_started`, `system_query_progress`, `system_query_complete`, `system_query_error`, `auth_status`, `signin_status`, `skills_list`, `service_status`, `config_data`, `config_saved`, `config_warning`, `restart_ack`, `progress`, `remote_message`, `error`.
 
-Every invocation carries a `request_id` (`uuid.uuid4().hex[:8]`) used for correlation across WebSocket, UI, Redis outbox, and log entries.
-
-### Redis streams schema
+### Redis streams (when Teams bridge is enabled)
 
 | Key | Direction | Fields |
 |---|---|---|
-| `{ns}:inbox:{email}`   | Remote → Agent | `sender`, `text`, `ts`, `msg_id`, optional `thread_id` hint |
-| `{ns}:outbox:{email}`  | Agent → Remote | `task_id`, `status`, `text` (prefixed with `#thread-xxxx`), `ts`, `in_reply_to` |
-| `{ns}:agents:{email}`  | Agent → Cloud  | JSON: `{name, email, started_at, version}` with TTL refreshed every 30 min |
-
-`{ns}` is `REDIS_NAMESPACE` (default: `hub-cowork`).
+| `{ns}:inbox:{email}` | Remote → Agent | `sender`, `text`, `ts`, `msg_id`, optional `thread_id` hint |
+| `{ns}:outbox:{email}` | Agent → Remote | `task_id`, `status`, `text` (prefixed with `#thread-xxxx`), `ts`, `in_reply_to` |
+| `{ns}:agents:{email}` | Agent → Cloud | JSON: `{name, email, started_at, version}` with TTL refreshed every 30 min |
 
 ---
 
-## Service Status Monitor
+## Service status monitor
 
-The top-bar dots (`MicrosoftIQ: WorkIQ • FoundryIQ • FabricIQ` and `Teams: Relay`) are driven by `core/service_status.py`, a thread-safe singleton (`_ServiceStatusMonitor`) that tracks reachability for the four external services the agent talks to:
+The top-bar pills (`MicrosoftIQ: WorkIQ • FoundryIQ • FabricIQ` and `Teams: Relay`) are driven by [`core/service_status.py`](src/hub_cowork/core/service_status.py), tracking reachability for the four external services with two update paths:
 
-| Service key   | What it covers                                |
-|---------------|-----------------------------------------------|
-| `workiq`      | Local WorkIQ CLI (`workiq.cmd` on PATH)       |
-| `foundryiq`   | FoundryIQ Azure AI Search knowledge base      |
-| `fabric_agent`| Fabric Data Agent (`assistants` API)          |
-| `redis_teams` | Redis bridge + agent presence registration    |
+- **Passive — every tool call.** Tool result envelopes flow through `mark_from_envelope(...)`. `ok` / `no_data` → green; `error` with `kind=config` → grey; other errors → red.
+- **Active — background probe thread.** Every 120s, services in `unknown` state or older than the interval are re-probed under a 6s budget. Probes never trigger interactive auth — they short-circuit to `unknown` until the user has signed in.
 
-**State values:** `ok`, `down`, `unconfigured`, `unknown`. Each tile carries `status`, free-form `detail` (shown in the tooltip), and `checked_at` (epoch seconds).
+The Redis tile is updated directly by the bridge (it owns the connection and the presence-key TTL heartbeat) and is intentionally not in the active-probe rotation.
 
-### Two update paths
-
-1. **Passive — every tool call.** Tool envelopes (`_tool_result`) flow through `mark_from_envelope(tool, status, kind)`:
-   - `ok` or `no_data` → `ok` (semantic "no match" is still reachable, so the dot stays green).
-   - `error` with `kind="config"` → `unconfigured` (greys out, signals "set the env var").
-   - `error` with any other kind → `down`.
-
-2. **Active — background probe thread.** `start_probes()` (called once from `desktop_host.main`) runs a daemon loop that re-probes services whose state is `unknown` or older than `_PROBE_INTERVAL` (120s). Probes use the `_PROBE_TIMEOUT` (6s) budget and **never trigger interactive auth** — `_is_signed_in()` short-circuits to `unknown` until the user has signed in, so a probe can't pop a browser window from a background thread.
-
-### Probe semantics — important asymmetry
-
-| Probe         | What it actually does                                                                 |
-|---------------|---------------------------------------------------------------------------------------|
-| `workiq`      | `workiq --version` via `subprocess` (no real query, no telemetry pollution).          |
-| `foundryiq`   | `GET /knowledgebases('{kb}')` against the configured KB. Real HTTP round-trip.        |
-| `fabric_agent`| **Token acquisition only** (`cred.get_token("https://api.fabric.microsoft.com/.default")`) — no actual call to the agent (which would spin up a Fabric thread + run and cost real compute). |
-
-**The Fabric probe is intentionally shallow** — it can false-positive if the user has Fabric entitlement in `AZURE_TENANT_ID` but the actual Fabric workspace lives in a *different* `RESOURCE_TENANT_ID`. The April 2026 tenant-mismatch regression surfaced this: FoundryIQ went red (real HTTP call rejected with 401), Fabric stayed green (token mint succeeded in the wrong tenant), and only the actual user query revealed Fabric was also broken. If you ever see this combination again, suspect cross-tenant credential reuse.
-
-### Why `redis_teams` is handled differently
-
-The Redis tile is **not** in the active-probe rotation (`_probe_once` explicitly iterates only over `workiq`, `foundryiq`, `fabric_agent`). The bridge owns the signal first-hand because:
-
-- "Channel up" means *Redis connected AND the agent presence key is registered* — only the bridge knows both.
-- The bridge runs a blocking `XREAD` poller, so an external probe couldn't safely interrogate the same connection.
-- Re-running the presence-registration probe from a background thread would race the heartbeat.
-
-So `host/redis_bridge.py` updates the tile directly via a tiny `_svc_mark()` helper. The state transitions:
-
-- **Initial connect succeeds → presence key written:** `_register_agent()` calls `_svc_mark("ok", "")`. This is the *real* "Teams reachable" moment.
-- **30-min heartbeat:** re-registers the presence key (TTL refresh), re-marks `ok`.
-- **Inbox poller `RedisConnectionError` / `BusyLoadingError`:** `_svc_mark("down", "connection lost: ...")` and enter exponential-backoff reconnect.
-- **Reconnect succeeds (next `XREAD` round-trips):** the poller tracks `was_disconnected` and flips back to `_svc_mark("ok", "")` on the very next successful loop iteration.
-- **Keep-alive every ~60s** inside the poller calls `_svc_mark("ok", "")` so the tooltip's `checked_at` doesn't freeze between rare status changes.
-- **Bridge stops:** `_svc_mark("down", "bridge stopped")`.
-
-The keep-alive matters because `mark()` always broadcasts a snapshot (even when the status didn't change) so the UI's "checked at NN:NN PM" tooltip stays current. Without the periodic call from inside the Redis poller, the Relay timestamp would freeze at the time of the last *transition*, which can easily be hours ago for a healthy bridge.
-
-### Broadcast contract
-
-`mark()` always invokes `_on_change(snapshot)` (wired by `desktop_host` to broadcast over WebSocket as `{"type": "service_status", "services": {...}}`). Cost is negligible — `mark` is invoked at most ~3-4 times/min across all services in steady state. Snapshots are also pushed at WebSocket connect time so a freshly opened UI paints the dots immediately without waiting for the next state change.
+The Fabric probe is **token-acquisition only** — it doesn't make a real call to the Fabric Data Agent (which would spin up a Fabric thread + run and cost real compute). This is intentional but can false-positive in cross-tenant guest scenarios; if you ever see "FoundryIQ red, Fabric green, but actual Fabric calls fail", suspect a cross-tenant credential reuse problem.
 
 ---
 
-## Configuration
+## Adding a skill or a tool
 
-Set in `.env` at the repo root, or in `src/hub_cowork/assets/.env.defaults` for shipped defaults, or via the Settings UI (which writes `_env_overrides` into `~/.hub-cowork/hub_config.json`).
+The full recipe is in [docs/architecture/AUTHORING_A_SKILL.md](docs/architecture/AUTHORING_A_SKILL.md). The very short version:
 
-| Variable | Description |
-|---|---|
-| `AZURE_OPENAI_ENDPOINT` | Azure OpenAI resource endpoint |
-| `AZURE_OPENAI_CHAT_MODEL` | Full model (e.g., `gpt-5.2`) |
-| `AZURE_OPENAI_CHAT_MODEL_SMALL` | Mini model (e.g., `gpt-5.4-mini`) |
-| `AZURE_OPENAI_API_VERSION` | e.g., `2025-03-01-preview` |
-| `AZURE_TENANT_ID` | Azure AD tenant ID |
-| `AZURE_SUBSCRIPTION_ID` | (optional) Azure subscription ID |
-| `ACS_ENDPOINT` | Azure Communication Services endpoint |
-| `ACS_SENDER_ADDRESS` | Verified sender for ACS email |
-| `AZ_REDIS_CACHE_ENDPOINT` | (optional) `host:port` — enables remote delivery |
-| `REDIS_NAMESPACE` | (optional, default `hub-cowork`) — key prefix |
-| `REDIS_SESSION_TTL_SECONDS` | (optional, default `86400`) — presence key TTL |
-| `AGENT_TIMEZONE` | (optional) IANA override; auto-detected otherwise |
-| `WORKIQ_PATH` | (optional) Full path to WorkIQ CLI |
-| `FOUNDRYIQ_ENDPOINT`, `FOUNDRYIQ_KB_NAME`, `FOUNDRYIQ_AUTH_MODE`, `FOUNDRYIQ_API_VERSION` | RFP skill only — Azure AI Search knowledge store |
-| `FABRIC_DATA_AGENT_URL`, `FABRIC_AUTH_MODE` | RFP skill only — Fabric Data Agent (direct call) |
-| `RESOURCE_TENANT_ID` | RFP skill only — cross-tenant guest subscription |
-| `RFP_OUTPUT_FOLDER`, `RFP_SHARE_RECIPIENTS` | RFP skill — OneDrive output + share list |
-| `GRAPH_*` | (optional) Microsoft Graph app creds for document sharing; falls back to WorkIQ |
+### A new skill
 
-**Redis is optional.** Without `AZ_REDIS_CACHE_ENDPOINT`, the agent runs local-only — all features work except Teams remote access.
+```
+src/hub_cowork/skills/<your_skill>/
+├── skill.yaml      # config only — name, description, mcp_servers, tool_allowlist, model_tier, queued
+├── SKILL.md        # the system prompt — domain expertise, NOT procedure
+└── mcp_server/     # OPTIONAL — only if this skill needs new tools no other skill uses
+    ├── __init__.py
+    ├── __main__.py
+    └── tools/
+        └── <your_tool>.py
+```
+
+Restart. The skill is auto-discovered, indexed by the loader, included in the router prompt, and invokable. There is no registration, no manifest, no decorator.
+
+**`skill.yaml` is config only.** No `instructions:`, no `next_skill:`, no `conversational:`, no prose. If you find yourself writing prose into YAML, you are doing it wrong — it goes in `SKILL.md`.
+
+**`SKILL.md` carries judgment, not procedure.** A senior solution engineer should read it and nod. If it reads like a numbered runbook a robot follows, you are doing it wrong — push the procedural bits into a tool.
+
+### A new tool
+
+Pick the right server:
+
+- **Skill-local** (used by one skill) → `skills/<skill>/mcp_server/tools/<tool>.py`
+- **Shared** (used by ≥2 skills, or wraps a foundational service like WorkIQ / Graph / ACS) → `mcp_servers/<server>/tools/<tool>.py`
+
+Don't preemptively share. Promote a tool to a shared server only when a second skill actually needs it.
+
+Tool functions return **JSON-serializable structured facts** with a `status`/`found` discriminator. **Never user-facing prose.** Never call other tools (within or across servers — composition is the model's job). Never construct credentials — call `get_credential()` from inside the tool. Progress flows through MCP notifications, which the pool forwards to `on_progress`.
+
+### The lint script
+
+```powershell
+python scripts/lint_skills.py
+```
+
+Run after any skill edit. The lint blocks the banned legacy patterns (`instructions:` in YAML, `[STOP_CHAIN]` / `[AWAITING_CONFIRMATION]` markers, `next_skill:`, `conversational:`) and confirms each skill folder is well-formed.
 
 ---
 
-## Authentication
+## Design docs
 
-Hub Cowork is a **multi-tenant** desktop agent: it talks to Azure OpenAI / ACS / WorkIQ in the user's **home tenant** (`AZURE_TENANT_ID`) and to FoundryIQ + Fabric Data Agent in a separate **resource tenant** (`RESOURCE_TENANT_ID`) where the user is a guest. To make this look and feel native — and silent on every restart — the auth stack is:
-
-1. **WAM (Windows Account Manager) broker** via [`azure-identity-broker`](https://pypi.org/project/azure-identity-broker/) → the same native account picker Teams, Outlook, and Office show. **No browser opens.** Falls back transparently to `InteractiveBrowserCredential` on macOS/Linux or when `pymsalruntime` is missing.
-2. **Per-cache `AuthenticationRecord` persistence** to `~/.hub-cowork/auth_records/<cache_name>.json` so each tenant's cached refresh token can be silently re-bound to its account on the next process launch.
-3. **`TokenCachePersistenceOptions(name=cache_name)`** so MSAL backs every cache with a separate DPAPI-encrypted blob under Windows Credential Manager.
-4. **One factory** — `core/auth_credential.py::make_credential(...)` — builds *all* credentials with the same broker / record / cache wiring, so every call site is consistent.
-
-There is no `DefaultAzureCredential` chain and no `az` CLI subprocess (the agent runs under `pythonw.exe` where `az` would have nowhere to print device codes).
-
-### Why the previous design re-prompted
-
-An earlier iteration used a bare `InteractiveBrowserCredential(tenant_id=..., cache_persistence_options=...)` without an `AuthenticationRecord`. That meant:
-
-- The **home-tenant** credential worked silently because `agent_core` separately persisted *its* record to `auth_record.json` and passed it on next launch.
-- The **resource-tenant** credentials in `search_foundryiq.py` and `query_fabric_agent.py` had **no record** — so even though their refresh tokens were cached on disk, MSAL couldn't tell which account owned them, and every `get_token(...)` for `https://search.azure.com/.default` or `https://api.fabric.microsoft.com/.default` fell back to interactive sign-in.
-
-The fix below makes record persistence automatic for **every** credential, regardless of which tenant or which call site.
-
-### The credential factory
-
-```python
-# src/hub_cowork/core/auth_credential.py
-
-# Probed once at import time
-try:
-    from azure.identity.broker import InteractiveBrowserBrokerCredential
-    _BROKER_AVAILABLE = True
-except Exception:
-    _BROKER_AVAILABLE = False  # macOS, Linux, or Windows without pymsalruntime
-
-_AUTH_RECORD_DIR = APP_HOME / "auth_records"   # ~/.hub-cowork/auth_records/
-_parent_hwnd: int | None = None                # set lazily by the desktop host
-
-def set_parent_window_handle(hwnd: int) -> None:
-    """Called from desktop_host._set_taskbar_icon() once pywebview's HWND
-    is known. The WAM dialog will then appear parented to the app window."""
-    global _parent_hwnd
-    _parent_hwnd = int(hwnd)
-
-def make_credential(*, tenant_id, cache_name, authentication_record=None, redirect_uri=None):
-    cache_opts = TokenCachePersistenceOptions(name=cache_name)         # disk-backed token cache
-
-    # Auto-load saved record for this cache so subsequent runs are silent
-    if authentication_record is None:
-        authentication_record = _load_record(cache_name)
-    have_record = authentication_record is not None
-
-    if _BROKER_AVAILABLE:
-        inner = InteractiveBrowserBrokerCredential(
-            parent_window_handle=_resolve_hwnd(),     # native dialog parented to app
-            use_default_broker_account=True,          # pre-select Windows-signed-in account
-            tenant_id=tenant_id,
-            cache_persistence_options=cache_opts,
-            authentication_record=authentication_record,
-        )
-    else:
-        inner = InteractiveBrowserCredential(
-            tenant_id=tenant_id,
-            cache_persistence_options=cache_opts,
-            authentication_record=authentication_record,
-            redirect_uri=redirect_uri,                # only used by the browser fallback
-        )
-
-    return _RecordPersistingCredential(inner, cache_name, have_record)
-```
-
-The four pieces, and what each one does:
-
-| Piece | Purpose |
-|---|---|
-| **`InteractiveBrowserBrokerCredential`** | Routes auth through WAM. Shows the native Windows account picker (parented to our HWND) instead of a browser. Cross-tenant guest accounts work the same way as your home account. |
-| **`TokenCachePersistenceOptions(name=cache_name)`** | Tells MSAL to back the in-memory cache with a disk file under Windows Credential Manager (DPAPI-encrypted; libsecret/Keychain on Linux/macOS). One blob per `cache_name`. |
-| **`AuthenticationRecord`** | Small JSON blob (`home_account_id`, `username`, `tenant_id`, `authority`, `client_id`) that tells MSAL *which* identity owns the cached entries. **Without it, even a populated cache is unusable** — MSAL has no way to map a `get_token()` request to a stored refresh token, so it falls back to interactive login. |
-| **`_RecordPersistingCredential` wrapper** | Captures the `AuthenticationRecord` on the first successful `get_token(...)` and writes it to `~/.hub-cowork/auth_records/<cache_name>.json`. On every subsequent process start, `make_credential()` auto-loads it. |
-
-### The wrapper that closes the loop
-
-```python
-class _RecordPersistingCredential:
-    """Persists an AuthenticationRecord to disk on the first successful
-    get_token() call, so subsequent process runs reuse the signed-in account
-    silently instead of re-prompting."""
-
-    def __init__(self, inner, cache_name, already_have_record):
-        self._inner = inner
-        self._cache_name = cache_name
-        self._persisted = already_have_record
-
-    def get_token(self, *scopes, **kwargs):
-        token = self._inner.get_token(*scopes, **kwargs)
-        if not self._persisted:
-            rec = self._inner.authenticate(scopes=list(scopes))   # cache hit, no UI
-            _save_record(rec, self._cache_name)                   # → ~/.hub-cowork/auth_records/<cache_name>.json
-            self._persisted = True
-        return token
-
-    def __getattr__(self, name):
-        return getattr(self._inner, name)
-```
-
-After the wrapper persists the record once, every cold start passes that record into the broker, which then locates the matching refresh-token entry by `home_account_id` and mints access tokens silently.
-
-### The three call sites
-
-All three consumers go through the factory with **distinct cache names**, so each tenant gets its own cache blob and its own record file. Distinct cache names matter: a single shared blob can confuse MSAL when the same account is registered against different tenants (home + guest).
-
-| Call site | Tenant | `cache_name` | Saved record |
-|---|---|---|---|
-| `core/agent_core.py::_create_credential()` | `AZURE_TENANT_ID` (home) — Azure OpenAI, ACS, WorkIQ | `hub_cowork` | `~/.hub-cowork/auth_records/hub_cowork.json` |
-| `skills/rfp_evaluation/tools/search_foundryiq.py::_get_credential()` | `RESOURCE_TENANT_ID` (guest) — Azure AI Search | `rfp_agent_foundryiq` | `~/.hub-cowork/auth_records/rfp_agent_foundryiq.json` |
-| `skills/rfp_evaluation/tools/query_fabric_agent.py::_get_credential()` | `RESOURCE_TENANT_ID` (guest) — Fabric Data Agent | `rfp_agent_foundryiq` *(reused — same tenant)* | shares the FoundryIQ record |
-
-The Redis bridge (`host/redis_bridge.py`) wraps the home-tenant credential in `redis-entraid`'s `EntraIdCredentialsProvider`, which handles its own connection-level reauth.
-
-### Wiring the parent HWND
-
-WAM dialogs need a parent window handle so they appear modal to *our* app rather than floating out in the OS. pywebview's HWND isn't known until after the window is created, so we register it lazily:
-
-```python
-# src/hub_cowork/host/desktop_host.py::_set_taskbar_icon()
-hwnd = ctypes.windll.user32.FindWindowW(None, WINDOW_TITLE)
-logger.info("Taskbar icon set via Win32 (hwnd=%s)", hwnd)
-try:
-    from hub_cowork.core.auth_credential import set_parent_window_handle
-    set_parent_window_handle(int(hwnd))
-except Exception:
-    pass
-```
-
-Until that fires, `_resolve_hwnd()` falls back to `user32.GetForegroundWindow()` so even the very first cold-start broker call (the home-tenant probe in `service_status`) appears on top of *something* sensible.
-
-### Sign-in flow (current)
-
-```
-First launch on a fresh machine
-└─ no auth_records/*.json exist
-   └─ home-tenant probe → broker shows native account picker (parented to app once HWND is registered)
-      ├─ user picks the Windows-signed-in account → silent token (use_default_broker_account=True often skips the picker entirely)
-      └─ wrapper.get_token() succeeds
-         └─ wrapper.authenticate() captures the AuthenticationRecord
-            └─ written to ~/.hub-cowork/auth_records/hub_cowork.json
-   └─ FoundryIQ probe (resource tenant) → same flow
-      └─ written to ~/.hub-cowork/auth_records/rfp_agent_foundryiq.json
-   └─ Fabric probe → record file already exists from FoundryIQ → silent
-
-Subsequent launches
-└─ make_credential() auto-loads each record
-   └─ broker silently mints access tokens from cached refresh tokens
-      └─ no dialog, no browser, nothing
-```
-
-You can confirm this in the log:
-
-```
-[Auth] Auth: parent window handle registered (hwnd=4394490)
-[Auth] Auth: loaded saved record for cache=hub_cowork (account=user@contoso.com)
-[Auth] Auth: loaded saved record for cache=rfp_agent_foundryiq (account=user@contoso.com)
-[FoundryIQ] Using WAM broker credential for tenant 3002da77-...
-InteractiveBrowserBrokerCredential.get_token succeeded
-```
-
-The `Using WAM broker credential` line is logged in the RFP tools right before each credential is built — if you ever see `Using InteractiveBrowser credential` instead, the broker package isn't available (e.g. PyInstaller bundle missing `pymsalruntime` data files; see `hub_cowork.spec`).
-
-### Token refresh paths
-
-Four consumers, all backed by the factory:
-
-| Consumer | Where it lives | Refresh logic |
+| Document | Status | Purpose |
 |---|---|---|
-| **Azure OpenAI** (Responses API) | `agent_core.get_responses_client()` | Caches OpenAI client + `expires_on`; refreshes when `now > expires_on - 300` (5-min skew). Calls `_credential.get_token(...)` — broker silently mints a new AT from the cached refresh token. Falls back to `run_az_login()` (interactive WAM) only if silent refresh raises. Guarded by `_responses_client_lock`. |
-| **FoundryIQ search** | `skills/rfp_evaluation/tools/search_foundryiq.py::_get_credential` | Per-tool token cache refreshes when `expires_on < now + 60`. Silent for `https://search.azure.com/.default` because the saved record points the broker at the right account in the resource tenant. |
-| **Fabric Data Agent** | `skills/rfp_evaluation/tools/query_fabric_agent.py::_get_credential` | Same pattern. Reuses the FoundryIQ credential when both tools run in the same skill (`[FabricAgent] Reusing credential from search_foundryiq`). |
-| **Redis bridge** | `host/redis_bridge.py` | `EntraIdCredentialsProvider` from `redis-entraid` wraps the home-tenant credential and rotates Redis access tokens on the connection automatically. |
+| [SKILLS_DESIGN_PRINCIPLES.md](docs/architecture/SKILLS_DESIGN_PRINCIPLES.md) | **Authoritative spec** | The 14 non-negotiables. The §9 PR checklist. Part I (the three layers), Part II (runtime mechanics), Part III (deliberate divergences from Cowork). Read this before authoring or modifying any skill, tool, or runtime change. |
+| [AUTHORING_A_SKILL.md](docs/architecture/AUTHORING_A_SKILL.md) | Practical guide | The recipe — `skill.yaml` shape, `SKILL.md` style guide, MCP tool packaging, HITL pattern, validation. |
+| [REARCHITECTURE_PLAN.md](docs/architecture/REARCHITECTURE_PLAN.md) | Migration audit trail | The phased plan that brought the codebase from the legacy chained-skills + loose-Python-tools shape to the current MCP + single-skill shape. Useful as historical context. |
+| [ui-architecture.md](docs/ui-architecture.md) | UI internals | Three-pane layout, breakpoint behaviour, in-chat step cards. |
 
-### Why "no popup until 90+ days idle"
+### Reference
 
-- **Access tokens** (~1 hr) are refreshed silently from the **refresh token** in the persistent cache. The user never sees this.
-- **Refresh tokens** (~90 days) are themselves rolled forward on every successful use. As long as you use the app at least once every ~90 days, your refresh token never expires.
-- **Multiple resource scopes** (Cognitive Services, Azure Search, Fabric, ARM, etc.) are all minted from the same refresh token via MSAL's `acquire_token_silent` — first request to a new scope triggers a silent token call, not an interactive prompt.
-- **Cross-tenant guest access** uses a *separate* refresh token in a *separate* cache blob, but the mechanics are identical — and because the broker uses the same Windows-signed-in account by default (`use_default_broker_account=True`), the very first sign-in to the guest tenant typically also requires zero clicks.
-
-### Where the bytes actually live
-
-There are two on-disk artefact families. They are deliberately separate.
-
-**1. `~/.hub-cowork/auth_records/<cache_name>.json`** (written by Hub Cowork's wrapper, plain JSON, ~1 KB each, no secrets)
-
-One file per `cache_name` — currently `hub_cowork.json` (home tenant) and `rfp_agent_foundryiq.json` (resource tenant). Created automatically on the first successful `get_token(...)` for each credential:
-
-```python
-# core/auth_credential.py::_RecordPersistingCredential.get_token
-rec = self._inner.authenticate(scopes=list(scopes))   # silent — uses the AT we just acquired
-_save_record(rec, self._cache_name)                   # → ~/.hub-cowork/auth_records/<cache_name>.json
-```
-
-Contents are:
-
-```json
-{
-  "authority": "login.microsoftonline.com",
-  "client_id": "<azure-identity's default public client>",
-  "home_account_id": "<oid>.<tenant_id>",
-  "tenant_id": "<tenant_id>",
-  "username": "user@contoso.com",
-  "version": "1.0"
-}
-```
-
-This is **not** a token. It is a pointer that says *"the refresh token belonging to this user is somewhere in the MSAL cache — go find it."* On next process start, `make_credential()` deserialises the record and passes it to the broker, which then locates the matching refresh-token entry by `home_account_id`.
-
-**2. The MSAL persistent token cache** (written by `azure-identity[persistent-cache]` via `msal_extensions`, encrypted by the OS keystore)
-
-| Platform | Backend | Where |
-|---|---|---|
-| **Windows** | DPAPI-encrypted file | `%LOCALAPPDATA%\.IdentityService\<cache_name>.cache` (one per `TokenCachePersistenceOptions(name=...)`) |
-| **macOS** | Keychain | Service `<cache_name>` |
-| **Linux** | libsecret (gnome-keyring/KWallet) | Service `<cache_name>`. Falls back to in-memory only if libsecret is missing (we don't set `allow_unencrypted_storage`). |
-
-So on Windows you'll see two cache blobs once both tenants are signed in: `hub_cowork.cache` and `rfp_agent_foundryiq.cache`. Each contains:
-
-| Entry | What it is | Lifetime |
-|---|---|---|
-| `AccessToken` | One per `(home_account_id, scope)` tuple. Bearer string + `expires_on`. | ~1 hour (Entra default; varies by tenant policy) |
-| `RefreshToken` | One per `home_account_id`. Used to mint new access tokens for any scope. | Sliding ~90 days; rolled forward on every use |
-| `Account` / `IdToken` | Identity metadata, last-known username, etc. | Indefinite |
-
-There are **no client secrets** — both `InteractiveBrowserBrokerCredential` and `InteractiveBrowserCredential` are public-client flows (PKCE), so the refresh token is the only long-lived secret on the box, and it sits behind the OS keystore.
-
-### How a `get_token(...)` call actually flows
-
-```
-caller: foundry_credential.get_token("https://search.azure.com/.default")
-          │
-          ▼
-_RecordPersistingCredential   (Hub Cowork wrapper)
-  └─ delegates to inner.get_token(...)
-          │
-          ▼
-InteractiveBrowserBrokerCredential   (azure-identity-broker)
-  ├─ open MSAL persistent cache (DPAPI-decrypt rfp_agent_foundryiq.cache)
-  ├─ look up account by home_account_id (from AuthenticationRecord)
-  ├─ MSAL.acquire_token_silent(scopes=["https://search.azure.com/.default"], account=…)
-  │     │
-  │     ├─ AccessToken cache hit AND not expired?
-  │     │     → return cached bearer (no network call)
-  │     │
-  │     ├─ AccessToken miss / expired, RefreshToken present?
-  │     │     → POST https://login.microsoftonline.com/{resource_tenant}/oauth2/v2.0/token
-  │     │         grant_type=refresh_token
-  │     │         refresh_token=<from cache>
-  │     │         scope=https://search.azure.com/.default
-  │     │       ← new AccessToken + (usually) a NEW RefreshToken (the old one is invalidated)
-  │     │     → write both back into the persistent cache (DPAPI-re-encrypt the file)
-  │     │     → return new bearer
-  │     │
-  │     └─ RefreshToken missing / Entra rejects it?
-  │           → broker invokes WAM → native account picker (parented to our HWND)
-  │             → user picks the Windows-signed-in account → broker mints fresh tokens
-  │             → if user cancels → ClientAuthenticationError
-  │
-  ▼
-wrapper persists the AuthenticationRecord on first success, then returns the token.
-```
-
-Two consequences worth knowing:
-
-- **Refresh-token rotation is automatic.** Every silent refresh writes a *new* refresh token to the cache and invalidates the old one server-side. This is why an idle laptop that hasn't talked to Entra in 6 months will need re-login, but a daily-used one effectively never does.
-- **Per-scope access tokens are independent cache entries.** First `get_token` for a new resource silently round-trips to Entra to mint a new access token from the existing refresh token, then caches it for ~1 hour. No browser, no user prompt — but a network call.
-
-### How Hub Cowork's caches interact with refresh
-
-| Cache layer | Lives in | What's stored | When it refreshes |
-|---|---|---|---|
-| **OpenAI client** (`agent_core._responses_client`) | Process memory | The `OpenAI` SDK instance and its bearer string | Rebuilt when `time.time() > _responses_client_token_expires - 300` |
-| **FoundryIQ token** (`search_foundryiq._cached_token`) | Process memory | `AccessToken` namedtuple | Refreshed when `expires_on < now + 60` |
-| **Fabric token** (`query_fabric_agent._cached_token`) | Process memory | `AccessToken` namedtuple | Refreshed when `expires_on - now < 60` |
-| **MSAL persistent caches** (one per `cache_name`) | OS keystore (DPAPI/Keychain/libsecret) | `AccessToken` + `RefreshToken` per scope | Updated by every `inner.get_token(...)` call that hits the network |
-
-The in-process caches are pure performance optimisations — they avoid touching the disk-backed MSAL cache (DPAPI decrypt + JSON parse) on every API call. When they expire, they delegate to the credential, which is where the real refresh logic (cached AT → refresh-token grant → broker fallback) lives.
-
-### Two independent refresh-token paths (one per tenant)
-
-The home tenant and the resource tenant each have a fully isolated MSAL cache + refresh-token lifecycle. Nothing is shared between them — refreshing one never touches the other, and a failure in one cannot cascade.
-
-```
-┌─────────────────────── Home tenant (AZURE_TENANT_ID) ──────────────────────┐
-│                                                                            │
-│  agent_core._create_credential()                                           │
-│      └─ make_credential(cache_name="hub_cowork", tenant_id=HOME)           │
-│                │                                                           │
-│                ├─ AuthenticationRecord:  ~/.hub-cowork/auth_records/       │
-│                │                          hub_cowork.json                  │
-│                │                                                           │
-│                └─ MSAL cache blob:       %LOCALAPPDATA%/.IdentityService/  │
-│                                          hub_cowork.cache                  │
-│                                          (DPAPI-encrypted, holds the       │
-│                                           HOME refresh token + per-scope   │
-│                                           access tokens)                   │
-│                                                                            │
-│  Consumers: Azure OpenAI · ACS · WorkIQ · Redis bridge                     │
-│  Refresh:   silent on every get_token; rolls forward the HOME refresh      │
-│             token; WAM dialog only if HOME refresh token is rejected.      │
-└────────────────────────────────────────────────────────────────────────────┘
-
-┌──────────────── Resource tenant (RESOURCE_TENANT_ID) ──────────────────────┐
-│                                                                            │
-│  search_foundryiq._get_credential()                                        │
-│  query_fabric_agent._get_credential()                                      │
-│      └─ make_credential(cache_name="rfp_agent_foundryiq",                  │
-│                         tenant_id=RESOURCE)                                │
-│                │                                                           │
-│                ├─ AuthenticationRecord:  ~/.hub-cowork/auth_records/       │
-│                │                          rfp_agent_foundryiq.json         │
-│                │                                                           │
-│                └─ MSAL cache blob:       %LOCALAPPDATA%/.IdentityService/  │
-│                                          rfp_agent_foundryiq.cache         │
-│                                          (DPAPI-encrypted, holds the       │
-│                                           RESOURCE refresh token + per-    │
-│                                           scope access tokens)             │
-│                                                                            │
-│  Consumers: Azure AI Search (FoundryIQ) · Fabric Data Agent                │
-│  Refresh:   silent on every get_token; rolls forward the RESOURCE          │
-│             refresh token; WAM dialog only if RESOURCE refresh token is    │
-│             rejected. Failure here does NOT affect Azure OpenAI / ACS.     │
-└────────────────────────────────────────────────────────────────────────────┘
-```
-
-What this isolation buys us:
-
-| Property | Home tenant | Resource tenant |
-|---|---|---|
-| **Refresh-token storage** | `hub_cowork.cache` (DPAPI) | `rfp_agent_foundryiq.cache` (DPAPI) |
-| **Account record** | `auth_records/hub_cowork.json` | `auth_records/rfp_agent_foundryiq.json` |
-| **Token endpoint** | `https://login.microsoftonline.com/{HOME_TENANT_ID}/oauth2/v2.0/token` | `https://login.microsoftonline.com/{RESOURCE_TENANT_ID}/oauth2/v2.0/token` |
-| **90-day idle clock** | Resets on every Azure OpenAI / ACS / WorkIQ call | Resets on every FoundryIQ / Fabric call |
-| **CA policy enforcement** | Honours HOME tenant CA policies (e.g. MFA frequency) | Honours RESOURCE tenant CA policies independently |
-| **Account switching** | Delete `auth_records/hub_cowork.json` to re-prompt | Delete `auth_records/rfp_agent_foundryiq.json` to re-prompt |
-| **First-launch sign-in** | One WAM dialog (often zero clicks via `use_default_broker_account=True`) | Separate WAM dialog if the Windows-signed-in account isn't a guest in the resource tenant; zero clicks if it is |
-
-Because both consumers within the resource tenant (FoundryIQ search and Fabric Data Agent) use the same `cache_name`, they **share** the resource-tenant refresh token — so a fresh `get_token` for a Fabric scope after FoundryIQ has already authenticated is silent (it just mints a new access token from the shared refresh token in `rfp_agent_foundryiq.cache`).
-
-### When a sign-in dialog **does** appear
-
-| Trigger | What to expect |
-|---|---|
-| First-ever launch on a machine | WAM dialog (native account picker) — typically one click since the Windows-signed-in account is pre-selected. The home tenant and resource tenant each prompt once if no Windows account satisfies both. |
-| `~/.hub-cowork/auth_records/<cache_name>.json` deleted or corrupted | Next `get_token()` for that cache re-prompts (silent if MSAL cache still has a valid refresh token; broker dialog otherwise). |
-| Refresh token expired (>90 days idle, password change, revocation, conditional-access policy update) | Next `get_token()` triggers WAM dialog. |
-| Wrong tenant in `.env` | All silent refreshes fail — re-sign-in succeeds against the new tenant and a new record is saved on the next successful call. |
-| Broker package missing (e.g. macOS, Linux, broken PyInstaller bundle) | Falls back to `InteractiveBrowserCredential` — opens the system browser instead of WAM. Look for `WAM broker credential unavailable` at startup. |
-
-If you see frequent popups, check the agent log for `Token refresh failed — attempting interactive login...`. The MSAL exception message that follows pinpoints the failure (e.g. `AADSTS50173: refresh token used too late`, `AADSTS65001: consent revoked`).
-
-### Operational notes
-
-- `check_azure_auth()` is **non-interactive by design** — it never opens a browser or WAM dialog, so you can poll it from the UI thread without surprising the user.
-- Auth records are small (~1 KB), one per `cache_name`, and contain no secrets — only the user's home-account ID and tenant. The actual tokens live in the OS-level secure store managed by MSAL.
-- To force a re-sign-in (e.g. switching accounts), delete `~/.hub-cowork/auth_records/` and restart. The MSAL caches for the prior account remain in Credential Manager but are harmless without the records.
-- To switch only the resource-tenant identity, delete just `~/.hub-cowork/auth_records/rfp_agent_foundryiq.json`.
-- `TokenCachePersistenceOptions(name=...)` doubles as the Credential Manager target prefix. Forks of this app should change the name (in `make_credential` call sites and `agent_core`) to avoid sharing the cache blob with upstream.
-- **Packaging note (PyInstaller):** WAM relies on `pymsalruntime`'s native DLLs. `hub_cowork.spec` already collects them via `copy_metadata("azure-identity-broker")`, `collect_data_files("pymsalruntime")`, and explicit `hiddenimports = [..., "azure.identity.broker", "pymsalruntime"]`. If you ever rebundle and see `WAM broker credential unavailable (ImportError) — falling back to InteractiveBrowserCredential` in the packaged EXE's log, those three spec entries are the place to check.
-
-
----
-
-## Dependencies
-
-| Package | Purpose |
-|---|---|
-| `openai` | Azure OpenAI Responses API client |
-| `azure-identity[persistent-cache]` | Persistent token cache |
-| `azure-identity-broker` (Windows only) | WAM broker credential — native account picker, no browser popup |
-| `azure-communication-email` | ACS email (calendar invites) |
-| `python-dotenv` | `.env` loading |
-| `pywebview` | Desktop window for the chat UI |
-| `websockets` | UI ↔ backend WebSocket |
-| `winotify` | Windows toasts |
-| `pyyaml` | Skill YAML parsing |
-| `tzlocal` | Auto-detect system timezone |
-| `python-docx` | Word document creation |
-| `redis`, `redis-entraid` | Azure Managed Redis (cluster mode, passwordless) |
-| `openai` (Assistants API) | RFP skill — Fabric Data Agent direct client (subclassed `OpenAI` with per-request Fabric bearer token) |
-| `requests` | RFP skill — FoundryIQ REST |
-
----
-
-## Logging
-
-All logs are written to `~/.hub-cowork/agent.log` — routing decisions, tool calls, thread executor events, Redis bridge events, classifier verdicts, and authentication. The WebSocket log handler reads `current_thread_id` from a ContextVar set by `_ThreadWorker`, so log records are routed to the correct per-thread `code_log` in the UI. Entries with no thread context fall into the `system` bucket.
-
----
-
-## Pitfalls
-
-- Azure auth must complete (user clicks **Sign In**) before any LLM or tool calls work.
-- `query_workiq` shells out to the `workiq` CLI binary — must be on `PATH` or set `WORKIQ_PATH`.
-- Windows-specific stack: `pythonw.exe`, `winotify`, Win32 ctypes tray. Mac support exists but is untested.
-- `scripts\stop.ps1` matches `pythonw.exe` processes whose command line contains `-m hub_cowork` — it will NOT kill unrelated `pythonw` processes.
-- Ports **18080** (WebSocket) and **18081** (HTTP) are hardcoded.
-- No automated tests — verification is manual via the UI or `test-client/chat.py`.
-
-### Known issues & resolutions
-
-#### WorkIQ returns empty output when called from the agent (resolved Apr 2026)
-
-**Symptom:** A `query_workiq` invocation logs `WorkIQ Response received (stdout=0 chars, stderr=0 chars, rc=0)` and the skill reports "No matching email returned by WorkIQ", even though running the **exact same** `workiq ask -q "..."` command in a `cmd`/PowerShell terminal returns a full answer. Reproduces intermittently — short ASCII-only queries sometimes work, longer queries with non-ASCII characters in the response fail every time.
-
-**When it happens:** Any time `workiq.exe`'s response body contains at least one byte that is not valid UTF-8 — typically because the answer contains an em dash (`—`), smart quotes (`"` `"` `'` `'`), an accented character (`é`, `ò`, `ñ`), or other characters that .NET writes using the active Windows ANSI code page (cp1252) rather than UTF-8 when stdout is redirected to a pipe.
-
-**Root cause:** `src/hub_cowork/tools/query_workiq.py` was calling `subprocess.run(..., capture_output=True, text=True, encoding="utf-8")`. When `workiq.exe` (a .NET console app) detects that stdout is a pipe rather than a console, it writes output in the active Windows ANSI code page (cp1252 in en-US locales), **not** UTF-8. Python's subprocess reader thread then raises `UnicodeDecodeError: 'utf-8' codec can't decode byte 0xXX` on the first non-ASCII byte. The exception is **swallowed inside the reader thread** — the parent `subprocess.run()` call returns normally with `returncode=0` but `result.stdout == ""`. The agent sees an empty response and reports "no email found"; from a real terminal it works because the console handles encoding/display itself.
-
-Confirmed via a four-way diagnostic: `.CMD` shim, `node + workiq.js`, `workiq.exe` direct, and `workiq.exe` without `CREATE_NO_WINDOW` — **all four** failed identically with the underlying `UnicodeDecodeError: 'utf-8' codec can't decode byte 0xf2 in position 2151: invalid continuation byte` (`0xf2` = `ò` in cp1252).
-
-**Fix:** In [query_workiq.py](src/hub_cowork/tools/query_workiq.py), capture as raw bytes (no `text=`/`encoding=`) and decode with a tolerant fallback chain: `utf-8` → `cp1252` → `utf-8` with `errors='replace'`. The reader thread now never raises, so stdout is always returned in full.
-
-**General lesson:** When invoking any Windows .NET / native console binary from Python `subprocess` with `capture_output=True`, prefer **bytes capture + manual tolerant decode** over `text=True, encoding="utf-8"`. The console's automatic encoding translation does not apply when stdout is a pipe, and the silent loss of output on `UnicodeDecodeError` is extremely hard to debug.
-
----
-
-## UI Architecture (TL;DR)
-
-Hub Cowork is a **native Windows desktop app** whose window contents are
-rendered with HTML / CSS / vanilla JavaScript inside an embedded
-**WebView2** (the Chromium/Edge engine that ships with Windows 10/11),
-hosted by **pywebview**. The UI and the Python backend run in the
-**same `pythonw.exe` process** and talk over a local-loopback WebSocket
-on `127.0.0.1:18080`.
-
-- **No second runtime** — no Node.js, no bundled Chromium, no npm/Vite
-  build step. WebView2 is already installed on every modern Windows.
-- **Still a real native app** — own HWND + taskbar icon, Win32 tray
-  (raw `ctypes`), `winotify` toasts, single-instance mutex, stable
-  `AppUserModelID`, headless `pythonw.exe` in production.
-- **Same pattern used by** VS Code, Teams, Slack, Discord, GitHub
-  Desktop, Azure Data Studio, 1Password, Notion, Postman.
-- **UI assets** live under [src/hub_cowork/assets/](src/hub_cowork/assets):
-  `chat_ui.html` (~230 lines markup), `chat_ui.css` (~1,370 lines),
-  `chat_ui.js` (~2,150 lines — state, WebSocket client, renderers,
-  Markdown). Vanilla JS, single mutable `state` object, imperative
-  re-render functions, `textContent`-only (XSS-safe).
-
-**Why not Electron / Tauri / React Native / WinUI?** Each of those
-would either bundle a second runtime (Electron = ~150 MB Chromium +
-Node) or force the Python backend to run as a **sidecar process with
-IPC** — strictly more complexity than today. For a single-window,
-single-user, single-author internal tool the cost isn't justified.
-Full rationale and the list of alternatives considered is in
-[docs/ui-architecture.md](docs/ui-architecture.md).
-
-**Revisit this choice when** multiple developers start editing the UI
-in parallel (drop in **Preact + htm** — still no build step), or when
-the same UI also needs to ship as a browser-tab web app.
-
----
-
-## License
-
-See the repository's license file.
+- [Anthropic knowledge-work-plugins](https://github.com/anthropics/knowledge-work-plugins) — the original SKILL.md pattern and the Claude Cowork skills+MCP design Hub Cowork is modelled on.
+- [Anthropic skills repo](https://github.com/anthropics/skills) — general-purpose skills.
+- [Model Context Protocol spec](https://modelcontextprotocol.io/) and the [Python SDK](https://github.com/modelcontextprotocol/python-sdk) (`mcp` package).
+- [Azure OpenAI Responses API](https://learn.microsoft.com/azure/ai-services/openai/concepts/responses) — the model orchestration layer.
+- [`workiq-agent-remote-client`](https://github.com/sansri/workiq-agent-remote-client) — the Teams relay (Azure Container App on the Microsoft 365 Agents SDK).

@@ -36,11 +36,11 @@ from typing import Any
 
 from hub_cowork.core.app_paths import APP_HOME
 from hub_cowork.core.computer_use import run_computer_use_task
-from hub_cowork.tools._tool_result import ok, error
+from hub_cowork.mcp_servers._tool_result import ok, error
 # Reuse the retailer registry, region resolver, headless default, slug,
 # and JSON-extraction helpers from the sibling deep-scrape tool so we
 # always stay in lockstep with whatever the user has configured.
-from hub_cowork.skills.shelf_watch.tools._compare import (
+from hub_cowork.skills.shelf_watch.mcp_server.tools._compare import (
     _RETAILERS,
     _resolve_region,
     _resolve_headless_default,

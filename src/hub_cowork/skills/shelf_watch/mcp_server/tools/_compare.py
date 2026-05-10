@@ -38,8 +38,8 @@ from typing import Any
 
 from hub_cowork.core.app_paths import APP_HOME
 from hub_cowork.core.computer_use import run_computer_use_task
-from hub_cowork.tools._tool_result import ok, error
-from hub_cowork.skills.shelf_watch.tools._memory import save_run as _save_run_to_memory
+from hub_cowork.mcp_servers._tool_result import ok, error
+from hub_cowork.skills.shelf_watch.mcp_server.tools._memory import save_run as _save_run_to_memory
 
 logger = logging.getLogger("hub_se_agent")
 

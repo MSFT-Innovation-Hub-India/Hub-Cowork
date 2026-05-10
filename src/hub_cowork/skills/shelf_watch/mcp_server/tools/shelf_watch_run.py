@@ -57,12 +57,12 @@ import json
 import logging
 from typing import Any
 
-from hub_cowork.tools._tool_result import ok, error
+from hub_cowork.mcp_servers._tool_result import ok, error
 
-from hub_cowork.skills.shelf_watch.tools import _session
-from hub_cowork.skills.shelf_watch.tools import _discover
-from hub_cowork.skills.shelf_watch.tools import _compare
-from hub_cowork.skills.shelf_watch.tools import _report
+from hub_cowork.skills.shelf_watch.mcp_server.tools import _session
+from hub_cowork.skills.shelf_watch.mcp_server.tools import _discover
+from hub_cowork.skills.shelf_watch.mcp_server.tools import _compare
+from hub_cowork.skills.shelf_watch.mcp_server.tools import _report
 
 logger = logging.getLogger("hub_se_agent")
 

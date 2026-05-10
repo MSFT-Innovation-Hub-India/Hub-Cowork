@@ -52,15 +52,26 @@ _organizer_email: str | None = None
 
 
 def set_credential(credential: InteractiveBrowserCredential):
-    """Set the shared credential instance (called by agent_core)."""
+    """Set the shared credential instance (called by agent_core in the host
+    process). MCP server subprocesses never have this called — they fall
+    through to the shared on-disk MSAL cache via auth_credential.get_credential()."""
     global _credential
     _credential = credential
 
 
 def _get_credential() -> InteractiveBrowserCredential:
-    if _credential is None:
-        raise RuntimeError("Credential not set. Call set_credential() first.")
-    return _credential
+    global _credential
+    if _credential is not None:
+        return _credential
+    # Subprocess path (MCP server): host process never called set_credential
+    # in this Python process. Rebuild via the shared factory using the
+    # on-disk MSAL cache + AuthenticationRecord the host already wrote.
+    # Silent token refresh works as long as the user has signed in once.
+    from hub_cowork.core.auth_credential import make_credential
+    tenant_id = os.environ.get("AZURE_TENANT_ID") or None
+    cred = make_credential(tenant_id=tenant_id, cache_name="hub_cowork")
+    _credential = cred  # type: ignore[assignment]
+    return cred  # type: ignore[return-value]
 
 
 def _resolve_organizer() -> tuple[str, str]:

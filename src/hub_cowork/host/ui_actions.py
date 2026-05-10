@@ -36,7 +36,7 @@ def run_validate_speakers(
 
     `broadcast` is the host's `_broadcast(msg: dict)` callable.
     """
-    from hub_cowork.tools.resolve_speakers import resolve as _resolve
+    from hub_cowork.mcp_servers.m365.tools.resolve_speakers import resolve as _resolve
     from hub_cowork.core.agent_core import WORKIQ_CLI
 
     def on_progress(kind: str, message: str):

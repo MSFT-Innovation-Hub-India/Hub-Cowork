@@ -7,7 +7,7 @@ import logging
 import subprocess
 import sys
 
-from ._tool_result import ok, no_data, error
+from hub_cowork.mcp_servers._tool_result import ok, no_data, error
 
 logger = logging.getLogger("hub_se_agent")
 
@@ -137,6 +137,7 @@ def handle(arguments: dict, *, on_progress=None, workiq_cli=None, **kwargs) -> s
         else:
             result = subprocess.run(
                 [workiq_cli, "ask", "-q", question],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 timeout=120,
                 creationflags=_NO_WINDOW,

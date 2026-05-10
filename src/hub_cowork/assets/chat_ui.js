@@ -658,13 +658,13 @@ function buildProgressCard(kind, message) {
   head.appendChild(dot);
 
   // Try to peel off a leading "**Title**" so the title sits in the header
-  // bar and the body just shows the supporting markdown.
+  // bar and the body just shows the supporting markdown. Applies to both
+  // progress and milestone cards.
   const raw = String(message ?? "");
   const m = raw.match(/^\s*\*\*([^*\n]+)\*\*\s*\n+([\s\S]*)$/);
   let title, rest;
   if (m) { title = m[1].trim(); rest = m[2]; }
-  else if (kind === "milestone") { title = raw.trim(); rest = ""; }
-  else { title = ""; rest = raw; }
+  else { title = kind === "milestone" ? raw.trim() : ""; rest = kind === "milestone" ? "" : raw; }
 
   if (title) {
     const t = document.createElement("span");

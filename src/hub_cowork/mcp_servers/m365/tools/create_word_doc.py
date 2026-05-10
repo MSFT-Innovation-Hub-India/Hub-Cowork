@@ -98,22 +98,73 @@ def _add_formatted_text(cell, text, size_pt):
         if is_bullet:
             para.style = "List Bullet"
 
-        # Handle bold/italic markdown inline
-        # Split on **bold** and *italic* markers
-        parts = re.split(r"(\*\*.*?\*\*|\*.*?\*)", stripped)
+        # Handle bold/italic markdown inline. Strip `[text](url)` first so
+        # we never render link syntax verbatim.
+        stripped = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", stripped)
+        parts = re.split(r"(\*\*.*?\*\*|\*.*?\*|`[^`]+`)", stripped)
         for part in parts:
+            if not part:
+                continue
             if part.startswith("**") and part.endswith("**"):
                 run = para.add_run(part[2:-2])
                 _set_run_font(run, size_pt, bold=True)
-            elif part.startswith("*") and part.endswith("*"):
+            elif part.startswith("*") and part.endswith("*") and len(part) > 2:
                 run = para.add_run(part[1:-1])
                 _set_run_font(run, size_pt)
                 run.italic = True
+            elif part.startswith("`") and part.endswith("`"):
+                run = para.add_run(part[1:-1])
+                _set_run_font(run, size_pt)
+                run.font.name = "Consolas"
             else:
                 run = para.add_run(part)
                 _set_run_font(run, size_pt)
 
         para.paragraph_format.space_after = Pt(2)
+
+
+def _strip_inline_markdown(text: str) -> str:
+    """Strip inline markdown markers from plain-text contexts (headings,
+    keys) so the docx never shows literal `**`, `*`, `_`, backticks, or
+    `[text](url)` link syntax."""
+    if not text:
+        return ""
+    s = str(text)
+    s = re.sub(r"`([^`]+)`", r"\1", s)
+    s = re.sub(r"\*\*(.+?)\*\*", r"\1", s)
+    s = re.sub(r"__(.+?)__", r"\1", s)
+    s = re.sub(r"\*(.+?)\*", r"\1", s)
+    s = re.sub(r"(?<!\w)_(.+?)_(?!\w)", r"\1", s)
+    s = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", s)
+    return s.strip()
+
+
+def _add_inline_runs(para, text: str, size_pt: float, *, base_bold: bool = False):
+    """Append runs to an existing paragraph, honouring inline markdown
+    (`**bold**`, `*italic*`, `` `code` ``, and `[text](url)` link text).
+    Used for metadata values and any other paragraph context where the
+    model may emit inline formatting."""
+    if not text:
+        return
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    parts = re.split(r"(\*\*.*?\*\*|\*[^*\n]+?\*|`[^`]+`)", text)
+    for part in parts:
+        if not part:
+            continue
+        if part.startswith("**") and part.endswith("**"):
+            run = para.add_run(part[2:-2])
+            _set_run_font(run, size_pt, bold=True)
+        elif part.startswith("*") and part.endswith("*") and len(part) > 2:
+            run = para.add_run(part[1:-1])
+            _set_run_font(run, size_pt, bold=base_bold)
+            run.italic = True
+        elif part.startswith("`") and part.endswith("`"):
+            run = para.add_run(part[1:-1])
+            _set_run_font(run, size_pt, bold=base_bold)
+            run.font.name = "Consolas"
+        else:
+            run = para.add_run(part)
+            _set_run_font(run, size_pt, bold=base_bold)
 
 
 def _parse_markdown(markdown: str) -> tuple[dict, list[str], list[list[str]]]:
@@ -148,17 +199,20 @@ def _parse_markdown(markdown: str) -> tuple[dict, list[str], list[list[str]]]:
         # Metadata: accept several common key:value formats above the table.
         # 1. **Key:** Value
         # 2. **Key**: Value
-        # 3. Bare "Key: Value" (only recognized for the known metadata keys so
+        # 3. - **Key:** Value  (markdown bullet form — the model often emits this)
+        # 4. Bare "Key: Value" (only recognized for the known metadata keys so
         #    we don't slurp unrelated lines).
         if not in_table:
-            m = re.match(r"\*\*(.+?)\*\*\s*:\s*(.*)", line_stripped)
+            # Strip a leading bullet marker so bullet-form metadata parses.
+            probe = re.sub(r"^[-*+]\s+", "", line_stripped)
+            m = re.match(r"\*\*(.+?)\*\*\s*:\s*(.*)", probe)
             if not m:
-                m = re.match(r"\*\*(.+?):\*\*\s*(.*)", line_stripped)
+                m = re.match(r"\*\*(.+?):\*\*\s*(.*)", probe)
             if m:
                 metadata[m.group(1).strip()] = m.group(2).strip()
                 continue
             # Bare "Customer Name: Foo" style — accept only the known keys
-            bm = re.match(r"^([A-Za-z][A-Za-z ]{2,30})\s*:\s*(.+)$", line_stripped)
+            bm = re.match(r"^([A-Za-z][A-Za-z ]{2,30})\s*:\s*(.+)$", probe)
             if bm:
                 key = bm.group(1).strip()
                 if key.lower() in {
@@ -172,15 +226,24 @@ def _parse_markdown(markdown: str) -> tuple[dict, list[str], list[list[str]]]:
                     metadata[key] = bm.group(2).strip()
                     continue
 
-        # Table header row
-        if line_stripped.startswith("|") and "**Time**" in line_stripped:
-            headers = [
-                c.strip().strip("*").strip()
+        # Table header row — accept the header whether or not the model
+        # bolded the column names ("**Time**" vs "Time"). Detect by the
+        # presence of a "Time" cell (case-insensitive) plus the
+        # markdown-table separator row that should follow.
+        if line_stripped.startswith("|") and not in_table:
+            cells_probe = [
+                c.strip().strip("*").strip().lower()
                 for c in line_stripped.split("|")
                 if c.strip()
             ]
-            in_table = True
-            continue
+            if cells_probe and cells_probe[0] == "time":
+                headers = [
+                    c.strip().strip("*").strip()
+                    for c in line_stripped.split("|")
+                    if c.strip()
+                ]
+                in_table = True
+                continue
 
         # Skip separator row
         if in_table and re.match(r"^\|[-\s|]+\|$", line_stripped):
@@ -271,17 +334,19 @@ def handle(arguments: dict, *, on_progress=None, **kwargs) -> str:
                 title_text = line.strip()[2:].strip()
                 break
         if title_text:
+            title_text = _strip_inline_markdown(title_text)
             title = doc.add_heading(title_text, level=1)
             for run in title.runs:
                 run.font.size = Pt(16)
 
-        # Metadata block
+        # Metadata block — render the key bold and parse inline markdown
+        # in the value so `**foo**` becomes bold, `*foo*` italic, etc.,
+        # rather than appearing as literal asterisks in the docx.
         for key, value in metadata.items():
             para = doc.add_paragraph()
-            run_key = para.add_run(f"{key}: ")
+            run_key = para.add_run(f"{_strip_inline_markdown(key)}: ")
             _set_run_font(run_key, 12, bold=True)
-            run_val = para.add_run(value)
-            _set_run_font(run_val, 12)
+            _add_inline_runs(para, value, 12)
             para.paragraph_format.space_after = Pt(2)
 
         # Day headings — find them in the markdown
@@ -290,7 +355,9 @@ def handle(arguments: dict, *, on_progress=None, **kwargs) -> str:
         # If there are day sections, process each; otherwise just do one table
         if len(day_sections) > 1:
             for i in range(1, len(day_sections), 2):
-                day_heading = day_sections[i].strip().lstrip("#").strip().strip("*").strip()
+                day_heading = _strip_inline_markdown(
+                    day_sections[i].strip().lstrip("#").strip()
+                )
                 doc.add_paragraph()  # spacing
                 h = doc.add_heading(day_heading, level=2)
                 for run in h.runs:

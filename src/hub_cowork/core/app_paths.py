@@ -32,7 +32,6 @@ LOG_FILE = APP_HOME / "agent.log"
 AUTH_RECORD_PATH = APP_HOME / "auth_record.json"
 USER_CONFIG_PATH = APP_HOME / "hub_config.json"
 THREADS_DIR = APP_HOME / "threads"
-ENGAGEMENT_CONTEXT_DIR = APP_HOME / "engagement_context"
 
 
 # Branding constants kept here so there is ONE place to tweak if someone

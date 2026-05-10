@@ -935,40 +935,30 @@ def _acquire_single_instance_lock():
 _SINGLE_INSTANCE_HANDLE = None
 
 
-# Engagement-context scratchpad files (one per customer) accumulate forever
-# unless cleaned up. Anything older than this is dropped on startup.
-_ENGAGEMENT_CONTEXT_TTL_DAYS = 30
+def _purge_legacy_engagement_context():
+    """One-time cleanup: remove the legacy engagement_context/ scratchpad dir.
 
-
-def _purge_stale_engagement_context():
-    """Delete engagement_context/*.json files older than the TTL.
-
-    The 4-phase agenda workflow uses these files to pass state between
-    phases. They're keyed by customer name and reused across re-runs, but
-    distinct customers add new files. After the TTL the customer's
-    workflow is almost certainly finished — re-running just regenerates
-    the file from a fresh briefing fetch.
+    The 4-phase agenda chain used to pass state between phases via
+    JSON files under ~/.hub-cowork/engagement_context/. The collapsed
+    `engagement_agenda` skill carries that state in the model's own
+    context (via `previous_response_id`) and no longer needs the
+    on-disk store. Drop the directory if it's still around so it
+    doesn't accumulate stale files on users who upgrade.
     """
     try:
-        from hub_cowork.core.app_paths import ENGAGEMENT_CONTEXT_DIR
+        from hub_cowork.core.app_paths import APP_HOME
     except Exception:
         return
-    if not ENGAGEMENT_CONTEXT_DIR.exists():
+    legacy_dir = APP_HOME / "engagement_context"
+    if not legacy_dir.exists():
         return
-    cutoff = time.time() - _ENGAGEMENT_CONTEXT_TTL_DAYS * 86400
-    removed = 0
-    for path in ENGAGEMENT_CONTEXT_DIR.glob("*.json"):
-        try:
-            if path.stat().st_mtime < cutoff:
-                path.unlink()
-                removed += 1
-        except Exception as e:
-            logger.warning("Could not purge stale context %s: %s", path.name, e)
-    if removed:
-        logger.info(
-            "Purged %d engagement_context file(s) older than %d days",
-            removed, _ENGAGEMENT_CONTEXT_TTL_DAYS,
-        )
+    try:
+        import shutil
+        shutil.rmtree(legacy_dir)
+        logger.info("Removed legacy engagement_context dir: %s", legacy_dir)
+    except Exception as e:
+        logger.warning("Could not remove legacy engagement_context dir: %s", e)
+
 
 def main():
     global _window
@@ -981,9 +971,8 @@ def main():
     logger.info("Log: %s", LOG_FILE)
     logger.info("=" * 50)
 
-    # Housekeeping: age out stale engagement_context scratchpad files so
-    # they don't accumulate forever (one per customer ever processed).
-    _purge_stale_engagement_context()
+    # One-time cleanup of the legacy 4-phase agenda scratchpad dir.
+    _purge_legacy_engagement_context()
 
     # 1. Wire the thread executor to broadcast and notify.
     pool = get_thread_pool()

@@ -1,0 +1,14 @@
+name: meeting_invites
+description: 'Send or create calendar invites and meeting invitations to speakers or presenters from an agenda document or event. Keywords: invite, calendar, schedule speakers, send invites, agenda, engagement.
+
+  '
+model: full
+queued: true
+mcp_servers:
+- .
+- workiq
+- utility
+tool_allowlist:
+- query_workiq
+- log_progress
+- create_meeting_invites

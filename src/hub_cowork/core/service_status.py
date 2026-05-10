@@ -284,7 +284,7 @@ def _probe_foundryiq() -> tuple[ServiceStatus, str]:
     dot rather than spawning a popup window from a background thread.
     """
     try:
-        from hub_cowork.skills.rfp_evaluation.tools.search_foundryiq import (
+        from hub_cowork.skills.rfp_evaluation.mcp_server.tools.search_foundryiq import (
             _load_config, _get_credential, _get_bearer_token, _get_session,
         )
     except Exception as e:
@@ -350,7 +350,7 @@ def _probe_fabric_agent() -> tuple[ServiceStatus, str]:
     try:
         # Reuse the same credential factory the tool itself uses so we
         # don't hold a second InteractiveBrowser instance open.
-        from hub_cowork.skills.rfp_evaluation.tools.query_fabric_agent import _get_credential  # type: ignore
+        from hub_cowork.skills.rfp_evaluation.mcp_server.tools.query_fabric_agent import _get_credential  # type: ignore
         cred = _get_credential(tenant_id, os.environ.get("FABRIC_AUTH_MODE") or "browser")
         # Fabric uses the PowerBI (Fabric) resource scope.
         token = cred.get_token("https://api.fabric.microsoft.com/.default")

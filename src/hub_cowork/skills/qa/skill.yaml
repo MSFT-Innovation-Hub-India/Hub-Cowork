@@ -1,0 +1,12 @@
+name: qa
+description: 'Answer questions that require looking up data from Microsoft 365: calendar events, documents, emails, contacts, etc.
+
+  '
+model: mini
+queued: true
+mcp_servers:
+- workiq
+- utility
+tool_allowlist:
+- query_workiq
+- log_progress

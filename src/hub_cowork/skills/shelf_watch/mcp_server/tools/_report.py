@@ -17,9 +17,9 @@ import re
 from datetime import datetime
 from typing import Any
 
-from hub_cowork.tools._tool_result import ok, error
-from hub_cowork.tools.create_word_doc import handle as create_word_doc_handle
-from hub_cowork.skills.shelf_watch.tools._memory import (
+from hub_cowork.mcp_servers._tool_result import ok, error
+from hub_cowork.mcp_servers.m365.tools.create_word_doc import handle as create_word_doc_handle
+from hub_cowork.skills.shelf_watch.mcp_server.tools._memory import (
     load_previous_snapshot as _load_previous_snapshot,
     index_by_pair as _index_by_pair,
     get_memory_dir as _get_memory_dir,

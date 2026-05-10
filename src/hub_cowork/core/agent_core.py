@@ -7,7 +7,6 @@ Architecture:
   Adding a new skill requires only a new YAML file — no Python code changes.
 """
 
-import importlib
 import json
 import logging
 import os
@@ -205,93 +204,201 @@ _SKILLS_DIR = _PACKAGE_ROOT / "skills"
 
 
 # ---------------------------------------------------------------------------
-# Tool loader — discovers tool modules from two locations:
-#   1. hub_cowork.tools.*                     — SHARED tools (cross-cutting)
-#   2. hub_cowork.skills.<name>.tools.*       — SKILL-PRIVATE tools that ship
-#                                               alongside their owning skill
-#                                               (Claude-Skill portability:
-#                                               a skill folder is a
-#                                               self-contained unit).
+# MCP-based tool layer (per SKILLS_DESIGN_PRINCIPLES.md §11 / §14.1)
 #
-# Tools are registered in a single flat registry keyed by the `name` declared
-# in their SCHEMA. Names must be globally unique.
+# Tools are MCP servers, spawned as stdio subprocesses by `MCPClientPool`.
+# Each skill declares the servers it depends on in its `skill.yaml`:
+#
+#     mcp_servers:
+#       - .                  # the skill's own per-skill server (skills/<name>/mcp_server)
+#       - workiq             # shared servers under hub_cowork.mcp_servers.<name>
+#       - utility
+#       - m365
+#     tool_allowlist:        # optional — restrict to a subset of advertised tools
+#       - log_progress
+#       - query_workiq
+#
+# At skill-load time we ask the pool for each declared server's `tools/list`,
+# build Responses-API `type="function"` schemas, and remember which server
+# owns each tool name so `handle_tool_call` can dispatch correctly.
+#
+# Per non-negotiable #14: stdio MCP servers cannot be passed to the Responses
+# API as native `mcp` tools (that mode is HTTPS-only). They are exposed as
+# ordinary function tools and dispatched client-side via the pool.
 # ---------------------------------------------------------------------------
 
-_SHARED_TOOLS_DIR = _PACKAGE_ROOT / "tools"
+from hub_cowork.core.mcp_client_pool import MCPClientPool, python_module_server  # noqa: E402
+import atexit  # noqa: E402
 
-# Registry of tool name → JSON schema (for the Responses API)
+# Module-singleton pool shared by every conversation thread.
+mcp_pool = MCPClientPool()
+atexit.register(mcp_pool.shutdown)
+
+# Built-in shared servers (under hub_cowork.mcp_servers.*). Per-skill servers
+# are registered on demand by `_register_skill_servers` when a skill declares
+# `.` in its mcp_servers list.
+_SHARED_SERVERS = {
+    "workiq":  "hub_cowork.mcp_servers.workiq",
+    "m365":    "hub_cowork.mcp_servers.m365",
+    "utility": "hub_cowork.mcp_servers.utility",
+}
+for _name, _module in _SHARED_SERVERS.items():
+    mcp_pool.register(_name, python_module_server(_module))
+
+# Per-skill servers are registered as their owning skill loads.
+# Map: tool_name -> server_name. Built incrementally as skills are loaded
+# so `handle_tool_call` always knows where to dispatch.
+_TOOL_TO_SERVER: dict[str, str] = {}
+
+# Cache of every tool schema we've seen, keyed by name. Used by Skill.tools
+# to build the Responses-API tool list without re-listing each turn.
 TOOL_SCHEMAS: dict[str, dict] = {}
 
-# Registry of tool name → handler function (module.handle)
-_TOOL_HANDLERS: dict[str, callable] = {}
+
+def _register_skill_servers(skill_folder_name: str) -> str | None:
+    """Register a skill's per-skill MCP server (if it ships one) and return
+    the server name. The convention is:
+        skills/<skill>/mcp_server/__main__.py
+    is auto-registered as server name `<skill>`.
+    """
+    server_dir = _SKILLS_DIR / skill_folder_name / "mcp_server"
+    if not (server_dir / "__main__.py").is_file():
+        return None
+    server_name = skill_folder_name
+    module_path = f"hub_cowork.skills.{skill_folder_name}.mcp_server"
+    mcp_pool.register(server_name, python_module_server(module_path))
+    return server_name
 
 
-def _register_tool(path: Path, mod, *, origin: str):
-    schema = getattr(mod, "SCHEMA", None)
-    handler = getattr(mod, "handle", None)
-    if schema is None or handler is None:
-        logger.warning("Tool module %s missing SCHEMA or handle — skipping", path.name)
-        return
-    tool_name = schema["name"]
-    if tool_name in TOOL_SCHEMAS:
-        logger.error(
-            "Tool name collision: %s already registered (new source: %s). "
-            "Skipping the duplicate.", tool_name, path,
-        )
-        return
-    TOOL_SCHEMAS[tool_name] = schema
-    _TOOL_HANDLERS[tool_name] = handler
-    logger.info("Loaded tool: %s (%s) from %s", tool_name, origin, path.name)
+def _resolve_skill_tools(skill_folder_name: str,
+                         declared_servers: list[str],
+                         allowlist: list[str] | None
+                         ) -> tuple[list[dict], dict[str, str]]:
+    """For one skill, ask each declared MCP server for its tools, apply the
+    optional allowlist, and return:
+      * the list of Responses-API function-tool schemas to advertise
+      * a name -> server map so the dispatcher can route calls
 
-
-def _load_tools():
-    """Discover and load all tool modules (shared + skill-private)."""
-    # 1. Shared tools: hub_cowork.tools.<stem>
-    if _SHARED_TOOLS_DIR.is_dir():
-        for path in sorted(_SHARED_TOOLS_DIR.glob("*.py")):
-            if path.name.startswith("_"):
+    `declared_servers` may contain `"."` to mean the skill's own per-skill
+    server (auto-named after the skill folder).
+    """
+    schemas: list[dict] = []
+    name_to_server: dict[str, str] = {}
+    seen: set[str] = set()
+    for entry in declared_servers:
+        if entry == ".":
+            server = _register_skill_servers(skill_folder_name)
+            if server is None:
+                logger.warning(
+                    "Skill '%s' declared mcp_server '.' but no mcp_server "
+                    "folder found under skills/%s/", skill_folder_name,
+                    skill_folder_name,
+                )
                 continue
-            module_path = f"hub_cowork.tools.{path.stem}"
-            try:
-                mod = importlib.import_module(module_path)
-                _register_tool(path, mod, origin="shared")
-            except Exception as e:
-                logger.error("Failed to load shared tool %s: %s", module_path, e)
-    else:
-        logger.warning("Shared tools directory not found: %s", _SHARED_TOOLS_DIR)
-
-    # 2. Skill-private tools: hub_cowork.skills.<skill>.tools.<stem>
-    if _SKILLS_DIR.is_dir():
-        for path in sorted(_SKILLS_DIR.glob("*/tools/*.py")):
-            if path.name.startswith("_"):
+        else:
+            server = entry
+            if not mcp_pool.is_registered(server):
+                logger.error(
+                    "Skill '%s' references unknown MCP server '%s'. "
+                    "Known: %s", skill_folder_name, server,
+                    sorted(_SHARED_SERVERS.keys()),
+                )
                 continue
-            skill_folder = path.parent.parent.name
-            module_path = f"hub_cowork.skills.{skill_folder}.tools.{path.stem}"
-            try:
-                mod = importlib.import_module(module_path)
-                _register_tool(path, mod, origin=f"skill:{skill_folder}")
-            except Exception as e:
-                logger.error("Failed to load skill-private tool %s: %s", module_path, e)
-
-
-_load_tools()
-logger.info("Tools loaded: %s", list(TOOL_SCHEMAS.keys()))
+        try:
+            advertised = mcp_pool.list_tools(server)
+        except Exception as e:
+            logger.error("Failed to list tools on server '%s': %s", server, e)
+            continue
+        for schema in advertised:
+            tool_name = schema["name"]
+            if allowlist is not None and tool_name not in allowlist:
+                continue
+            if tool_name in seen:
+                logger.warning(
+                    "Skill '%s': tool name '%s' advertised by multiple "
+                    "servers; first one wins.", skill_folder_name, tool_name,
+                )
+                continue
+            seen.add(tool_name)
+            schemas.append(schema)
+            name_to_server[tool_name] = server
+            # Cache globally too so Skill.tools and handle_tool_call work
+            # uniformly across skills.
+            TOOL_SCHEMAS[tool_name] = schema
+            _TOOL_TO_SERVER[tool_name] = server
+    return schemas, name_to_server
 
 
 class Skill:
-    """A loaded skill definition."""
+    """A loaded skill definition.
 
-    def __init__(self, data: dict, source_file: str):
+    Per SKILLS_DESIGN_PRINCIPLES.md: a skill is a folder with `skill.yaml`
+    (runtime config) and `SKILL.md` (the system prompt as Markdown). Legacy
+    YAML keys `conversational` and `next_skill` are accepted but ignored —
+    the runtime no longer branches on conversation mode and does not chain
+    skills (state flows via `previous_response_id`).
+    """
+
+    def __init__(self, data: dict, source_file: str, instructions: str | None = None,
+                 *, skill_folder: str | None = None):
         self.name: str = data["name"]
         self.description: str = data["description"].strip()
         self.model_tier: str = data.get("model", "mini")  # "full" or "mini"
-        self.conversational: bool = data.get("conversational", False)
         self.queued: bool = data.get("queued", True)  # queue business tasks by default
-        self.tool_names: list[str] = data.get("tools", [])
-        self.instructions: str = data["instructions"].strip()
+
+        # Tool wiring — MCP-based per SKILLS_DESIGN_PRINCIPLES.md §11.
+        # `mcp_servers` lists shared server names (workiq/m365/utility) plus
+        # `.` for the skill's own per-skill server. `tool_allowlist` is an
+        # optional subset filter applied across the union.
+        # Legacy: a flat `tools:` list of tool names is still accepted and
+        # treated as an allowlist resolved against ALL shared + own servers.
+        mcp_servers = data.get("mcp_servers")
+        tool_allowlist = data.get("tool_allowlist")
+        legacy_tools = data.get("tools")
+        folder = skill_folder or self.name
+        if mcp_servers is None:
+            # Back-compat: synthesize defaults — try the skill's own server
+            # (only if a per-skill mcp_server/ folder actually exists) plus
+            # the shared servers, and use the legacy `tools:` list as the
+            # allowlist.
+            mcp_servers = []
+            if (_SKILLS_DIR / folder / "mcp_server" / "__main__.py").is_file():
+                mcp_servers.append(".")
+            mcp_servers.extend(["workiq", "m365", "utility"])
+            if tool_allowlist is None and legacy_tools is not None:
+                tool_allowlist = list(legacy_tools)
+
+        self.mcp_servers: list[str] = list(mcp_servers)
+        self.tool_allowlist: list[str] | None = (
+            list(tool_allowlist) if tool_allowlist is not None else None
+        )
+        self._resolved_tools, self._tool_to_server = _resolve_skill_tools(
+            folder, self.mcp_servers, self.tool_allowlist,
+        )
+        self.tool_names: list[str] = [t["name"] for t in self._resolved_tools]
+
+        # Instructions resolution order:
+        #   1. explicit `instructions` arg (loaded from SKILL.md)  -- preferred
+        #   2. `instructions:` field in the YAML (legacy fallback)
+        if instructions is not None:
+            self.instructions: str = instructions.strip()
+        elif "instructions" in data:
+            self.instructions = data["instructions"].strip()
+        else:
+            raise ValueError(
+                f"Skill '{self.name}' has no instructions: provide a SKILL.md "
+                f"alongside its skill.yaml, or an `instructions:` field in the YAML."
+            )
         self.reasoning_effort: str | None = data.get("reasoning_effort")  # "low", "medium", or "high"
-        self.next_skill: str | None = data.get("next_skill")  # auto-chain to this skill on completion
         self.source_file: str = source_file
+
+        # Warn if legacy keys are still present.
+        for legacy in ("conversational", "next_skill"):
+            if legacy in data:
+                logger.warning(
+                    "Skill '%s': YAML key '%s' is ignored by the runtime — remove it.",
+                    self.name, legacy,
+                )
 
     @property
     def model(self) -> str:
@@ -299,25 +406,64 @@ class Skill:
 
     @property
     def tools(self) -> list[dict]:
-        return [TOOL_SCHEMAS[t] for t in self.tool_names if t in TOOL_SCHEMAS]
+        return list(self._resolved_tools)
+
+    def server_for_tool(self, name: str) -> str | None:
+        return self._tool_to_server.get(name)
 
 
 def _load_skills() -> dict[str, Skill]:
-    """Load all skill YAML files from the skills/ folder."""
+    """Load all skill folders from the skills/ tree.
+
+    A skill folder contains:
+      - skill.yaml  (runtime config: name, description, tools, model, ...)
+      - SKILL.md    (the system prompt as Markdown)
+
+    Legacy single-file YAMLs with an inline `instructions:` field are still
+    accepted for backward compatibility, but new skills MUST follow the folder
+    pattern. (See docs/architecture/SKILLS_DESIGN_PRINCIPLES.md §6, §12.)
+    """
     skills: dict[str, Skill] = {}
     if not _SKILLS_DIR.is_dir():
         logger.warning("Skills directory not found: %s", _SKILLS_DIR)
         return skills
+
+    # Discover every YAML under skills/ (any depth). For each YAML, look for a
+    # sibling SKILL.md. Files under tools/ subfolders are ignored.
     for path in sorted(_SKILLS_DIR.glob("**/*.yaml")):
         if path.name.startswith("_"):
+            continue
+        # Skip anything inside a tools/ subfolder
+        if "tools" in path.parts:
             continue
         try:
             with open(path, encoding="utf-8") as f:
                 data = yaml.safe_load(f)
-            skill = Skill(data, str(path))
+            if not isinstance(data, dict):
+                logger.error("Skill YAML %s is not a mapping — skipping", path)
+                continue
+
+            # Look for a sibling SKILL.md (the new shape).
+            md_path = path.parent / "SKILL.md"
+            instructions: str | None = None
+            if md_path.is_file():
+                instructions = md_path.read_text(encoding="utf-8")
+                if "instructions" in data:
+                    logger.warning(
+                        "Skill '%s' has BOTH SKILL.md and YAML `instructions:` — "
+                        "SKILL.md wins. Remove the YAML field.",
+                        data.get("name", path.name),
+                    )
+
+            skill = Skill(data, str(path), instructions=instructions,
+                          skill_folder=path.parent.name)
             skills[skill.name] = skill
-            logger.info("Loaded skill: %s (%s model, %d tools) from %s",
-                        skill.name, skill.model_tier, len(skill.tool_names), path.name)
+            logger.info(
+                "Loaded skill: %s (%s model, %d tools, source=%s) from %s",
+                skill.name, skill.model_tier, len(skill.tool_names),
+                "SKILL.md" if instructions is not None else "yaml.instructions",
+                path.relative_to(_SKILLS_DIR),
+            )
         except Exception as e:
             logger.error("Failed to load skill from %s: %s", path, e)
     return skills
@@ -351,7 +497,6 @@ def get_loaded_skills() -> list[dict]:
             "tools": s.tool_names,
             "group": group,
             "internal": s.description.upper().startswith("[INTERNAL"),
-            "next_skill": s.next_skill,
         })
     return out
 
@@ -607,12 +752,18 @@ def classify_inbox(text: str, active_threads_summary: list[dict]) -> dict:
 # ---------------------------------------------------------------------------
 
 def handle_tool_call(name: str, arguments: str, on_progress=None) -> str:
-    """Execute a tool call and return the result string."""
-    args = json.loads(arguments)
-    handler = _TOOL_HANDLERS.get(name)
-    if handler:
-        return handler(args, on_progress=on_progress, workiq_cli=WORKIQ_CLI)
-    return f"Unknown tool: {name}"
+    """Execute a tool call by dispatching it to the owning MCP server.
+
+    Per SKILLS_DESIGN_PRINCIPLES.md §14.1 / §11: the agent loop is a thin
+    bridge — it submits whatever tool the model asked for and returns the
+    result string. No mutation, no chaining, no marker parsing.
+    """
+    args = json.loads(arguments) if arguments else {}
+    server = _TOOL_TO_SERVER.get(name)
+    if server is None:
+        return json.dumps({"status": "error", "tool": name,
+                            "error": f"unknown tool '{name}' (no MCP server owns it)"})
+    return mcp_pool.call(server, name, args, on_progress=on_progress)
 
 
 # ---------------------------------------------------------------------------
@@ -672,42 +823,31 @@ class Cancelled(Exception):
 
 def _run_skill(skill: "Skill", thread, user_input: str,
                on_progress=None, is_cancelled=None) -> str:
-    """
-    Run a skill against a ConversationThread.
+    """Run a skill against a ConversationThread — the canonical Responses-API loop.
 
-    - Conversational skills use the thread's message history.
-    - `previous_response_id` is threaded through Responses API calls so that
-      a reopened thread resumes the same LLM conversation.
-    - Control-flow markers ([AWAITING_CONFIRMATION], [STOP_CHAIN]) update
-      the thread's active_session rather than any global.
+    Per SKILLS_DESIGN_PRINCIPLES.md §14 / §15:
+      - Conversation context flows through `previous_response_id` only. The
+        thread's `messages` list is a write-only side channel for the UI to
+        re-render the transcript; it is NEVER fed back into the LLM input.
+      - The runtime does no marker parsing, no skill chaining, no result
+        mutation. It dispatches `function_call` items the model produced,
+        submits `function_call_output`, and loops until no more tool calls.
+      - HITL is detected by a simple heuristic on the final text (trailing
+        question mark) and surfaced as `thread.status = awaiting_user`.
     """
     from hub_cowork.core.thread_manager import get_manager
     tm = get_manager()
 
     client = get_responses_client()
 
-    # Build input messages
-    if skill.conversational:
-        # The caller (ThreadExecutor) has already appended the user message
-        # to thread.messages, so we simply replay the persisted history.
-        # On a chained phase, the chain's `chain_input` becomes a synthetic
-        # user message that we add here if the history doesn't already end
-        # with one matching it.
-        if not thread.messages or thread.messages[-1].get("role") != "user":
-            tm.append_message(thread.id, "user", user_input,
-                              request_id=thread.last_request_id)
-            thread = tm.get(thread.id) or thread
-        input_messages = thread.conversational_history()
-        logger.info("[%s/%s] Query: %s (history: %d messages)",
-                    thread.id, skill.name, user_input, len(input_messages))
-    else:
-        input_messages = [{"role": "user", "content": user_input}]
-        logger.info("[%s/%s] Starting execution...", thread.id, skill.name)
+    # Always feed a single user message. The model sees prior context via
+    # `previous_response_id`. Do NOT replay thread.messages.
+    input_messages = [{"role": "user", "content": user_input}]
+    logger.info("[%s/%s] Query: %s", thread.id, skill.name, user_input)
 
     if on_progress and skill.tool_names:
         on_progress("step", f"{skill.name}: starting...")
 
-    # Initial API call
     tools = skill.tools or []
     api_kwargs: dict = dict(
         model=skill.model,
@@ -717,19 +857,19 @@ def _run_skill(skill: "Skill", thread, user_input: str,
     )
     if skill.reasoning_effort:
         api_kwargs["reasoning"] = {"effort": skill.reasoning_effort}
-    # Resume the LLM conversation if we have a prior response id.
     if thread.previous_response_id:
         api_kwargs["previous_response_id"] = thread.previous_response_id
     response = client.responses.create(**api_kwargs)
 
-    # Tool-call loop (only if skill has tools)
+    # Tool-call loop (only if the skill has any tools).
     if tools:
         step = 1
+        # Tools whose progress is already user-visible (or that are pure bookkeeping)
+        # don't need an extra "Step N: <tool>" progress line.
+        _silent_tools = {"log_progress", "get_hub_config"}
         while True:
-            # Cooperative cancellation: bail out between LLM turns.
             if is_cancelled and is_cancelled():
                 raise Cancelled()
-            # Log any reasoning/thinking the model produced before tool calls
             for item in response.output:
                 if hasattr(item, "type") and item.type == "reasoning":
                     for part in getattr(item, "summary", []):
@@ -740,16 +880,22 @@ def _run_skill(skill: "Skill", thread, user_input: str,
             if not tool_calls:
                 break
 
-            # Tools that produce their own visible output or are internal bookkeeping
-            _silent_tools = {"log_progress", "engagement_context", "get_hub_config"}
-
             tool_results = []
             for tc in tool_calls:
-                logger.info("[%s/%s Step %d] Calling tool: %s",
-                            thread.id, skill.name, step, tc.name)
+                # Compact arg preview so the Logs pane shows what was asked.
+                _args_preview = (tc.arguments or "").strip()
+                if len(_args_preview) > 600:
+                    _args_preview = _args_preview[:600] + "…(truncated)"
+                logger.info("[%s/%s Step %d] -> %s args=%s",
+                            thread.id, skill.name, step, tc.name, _args_preview)
                 if on_progress and tc.name not in _silent_tools:
                     on_progress("step", f"Step {step}: {tc.name}")
                 result = handle_tool_call(tc.name, tc.arguments, on_progress)
+                _result_preview = (result or "").strip().replace("\n", " ")
+                if len(_result_preview) > 800:
+                    _result_preview = _result_preview[:800] + "…(truncated)"
+                logger.info("[%s/%s Step %d] <- %s result=%s",
+                            thread.id, skill.name, step, tc.name, _result_preview)
                 tool_results.append({
                     "type": "function_call_output",
                     "call_id": tc.call_id,
@@ -769,7 +915,7 @@ def _run_skill(skill: "Skill", thread, user_input: str,
                 loop_kwargs["reasoning"] = {"effort": skill.reasoning_effort}
             response = client.responses.create(**loop_kwargs)
 
-    # Extract final text
+    # Extract final assistant text.
     final_text = ""
     for item in response.output:
         if item.type == "message":
@@ -780,64 +926,29 @@ def _run_skill(skill: "Skill", thread, user_input: str,
     # Persist the latest response id for future follow-ups.
     tm.set_previous_response_id(thread.id, response.id)
 
-    # Strip control-flow markers BEFORE persisting so the saved transcript
-    # never shows them. (The markers are still inspected below to drive
-    # session/chaining state; just not stored as part of the visible reply.)
-    persisted_text = final_text
-    if persisted_text:
-        for _marker in ("[AWAITING_CONFIRMATION]", "[STOP_CHAIN]"):
-            persisted_text = persisted_text.replace(_marker, "")
-        persisted_text = persisted_text.strip()
+    # Transitional courtesy: strip legacy control-flow markers from the
+    # *displayed* text so users don't see "[AWAITING_CONFIRMATION]" tokens
+    # while we migrate the older SKILL.md prose. The runtime no longer
+    # branches on these markers.
+    persisted_text = final_text or ""
+    for _marker in ("[AWAITING_CONFIRMATION]", "[STOP_CHAIN]"):
+        persisted_text = persisted_text.replace(_marker, "")
+    persisted_text = persisted_text.strip()
 
-    # Save assistant reply to the thread's conversation history.
-    # Persisted for both conversational and one-shot skills so the UI can
-    # re-render the full transcript after any get_thread round-trip.
+    # UI side channel only — never read back as LLM input.
     if persisted_text:
         tm.append_message(thread.id, "assistant", persisted_text,
                           request_id=thread.last_request_id)
 
-    # --- Active session & chaining logic (all thread-scoped) ---
-
-    # [AWAITING_CONFIRMATION] — skill is pausing for user input
-    if "[AWAITING_CONFIRMATION]" in (final_text or ""):
-        tm.set_active_session(thread.id, {
-            "skill_name": skill.name, "stage": "awaiting_confirmation",
-        })
+    # HITL heuristic: if the model ends its message with a question, treat
+    # the thread as awaiting the user. Otherwise mark complete via the
+    # executor's default ("completed"). See SKILLS_DESIGN_PRINCIPLES §14.4.
+    if persisted_text.rstrip().endswith("?"):
         tm.set_status(thread.id, "awaiting_user")
-        final_text = persisted_text
-        logger.info("[%s/%s] Awaiting user confirmation", thread.id, skill.name)
-        return final_text
+        logger.info("[%s/%s] Awaiting user reply (trailing question).",
+                    thread.id, skill.name)
 
-    # [STOP_CHAIN] — skill hit an error, stop chaining and clear session
-    if "[STOP_CHAIN]" in (final_text or ""):
-        tm.set_active_session(thread.id, None)
-        logger.info("[%s/%s] Stop chain", thread.id, skill.name)
-        return final_text
-
-    # Normal completion — clear active session and chain if configured
-    tm.set_active_session(thread.id, None)
-
-    # Autonomous skill chaining — run next_skill if configured
-    if skill.next_skill:
-        if is_cancelled and is_cancelled():
-            raise Cancelled()
-        next_skill_obj = _skills.get(skill.next_skill)
-        if next_skill_obj:
-            logger.info("[%s/%s] Chaining to: %s",
-                        thread.id, skill.name, skill.next_skill)
-            if on_progress:
-                on_progress("step", f"Chaining to {next_skill_obj.name}...")
-                on_progress("agent", next_skill_obj.name)
-            chain_input = final_text or "Continue with the next phase."
-            # Update the thread's current skill so UI reflects the active phase.
-            tm.set_skill(thread.id, next_skill_obj.name)
-            return _run_skill(next_skill_obj, thread, chain_input,
-                              on_progress, is_cancelled=is_cancelled)
-        else:
-            logger.warning("[%s/%s] next_skill '%s' not found — stopping chain",
-                           thread.id, skill.name, skill.next_skill)
-
-    return final_text
+    return persisted_text
 
 
 # ---------------------------------------------------------------------------

@@ -58,10 +58,8 @@ def handle(arguments: dict, *, on_progress=None, **kwargs) -> str:
     msg = f"{header}\n{separator}\n{body}\n{separator}\n{footer}"
     logger.info("\n%s\n", msg)
     if on_progress:
-        if is_milestone:
-            on_progress("milestone", step_title)
-        else:
-            # Send the full markdown details to the UI, not just the title
-            full_content = f"**{step_title}**\n\n{details}"
-            on_progress("progress", full_content)
+        # Both kinds carry the full body; the UI distinguishes them visually
+        # (milestone = yellow checkmark banner, progress = blue card).
+        full_content = f"**{step_title}**\n\n{details}"
+        on_progress("milestone" if is_milestone else "progress", full_content)
     return "Logged."

@@ -1,0 +1,10 @@
+name: task_status
+description: 'Check the status of currently running or recent tasks across all conversation threads. Keywords: status, what are you doing, what''s running, is any task running, where is my request, tasks in progress, what''s pending, awaiting input, busy, progress, current tasks, list threads.
+
+  '
+model: mini
+queued: false
+mcp_servers:
+- utility
+tool_allowlist:
+- get_task_status
