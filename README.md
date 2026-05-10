@@ -78,6 +78,12 @@ Because stdio MCP servers run on the user's machine and are unreachable from Azu
 - **Azure Communication Services (ACS).** Used by the **`send_email` / meeting-invite tool** to deliver `.ics` calendar invitations to the speakers on a published Innovation Hub agenda. ACS handles the SMTP-layer sending under our verified sender domain.
 - **Azure Blob Storage.** Holds the corpus of **case studies and customer testimonial PDF documents** that FoundryIQ indexes directly. The agent never reads blobs itself — it queries the FoundryIQ index, which already has the documents ingested.
 
+### The local file system — documents written locally, OneDrive syncs them to the cloud
+
+The desktop app has access to the **user's local folders**, and that is the deliberate channel for every artefact the agent produces. When a tool emits a Word document — the engagement agenda from `engagement_agenda`, the repurposed agenda from `agenda_repurpose`, the Bid Intelligence Brief from `rfp_evaluation`, the price-comparison report from `shelf_watch` — it is written to a configured local folder (`agenda_output_folder` / `RFP_OUTPUT_FOLDER` in hub config; defaults under `~/Documents/hub-cowork-agenda-docs/` and `~/Documents/hub-cowork-rfp-docs/`). The user is expected to point those folders at a path **already enrolled in the OneDrive sync client**, so the file appears in the cloud automatically a few seconds after it is written. The agent does not call the Graph upload API for these artefacts; it relies on the OS-level OneDrive client the user already trusts. Sharing links and "open in browser" URLs are then resolved against the synced cloud copy.
+
+The same local-first pattern covers everything Hub Cowork persists outside the Responses API: the per-thread JSON files in `~/.hub-cowork/threads/`, the MSAL token cache, the hub-config overrides, the `shelf_watch` run history. It's the user's machine, the user's filesystem, the user's identity — nothing intermediated by a managed service we own.
+
 ### Remote access via Microsoft Teams
 
 The user does not have to be in front of their laptop to drive the agent. **Azure Managed Redis** holds the inbound and outbound user-message streams (`{ns}:inbox:{email}`, `{ns}:outbox:{email}`, plus a presence key with TTL heartbeat). It is the **integration channel between the agent app and any client surface that Azure Bot Service supports** — today that means the **Microsoft Teams app**, but the same channel works for other Bot-Service-backed clients without changing the agent.
@@ -119,6 +125,24 @@ The full charter is in [docs/architecture/SKILLS_DESIGN_PRINCIPLES.md](docs/arch
 | **Model** (Azure OpenAI Responses API) | Tool selection, sequencing, conversation, HITL turns, error communication | The Responses API server-side loop | — |
 | **Skill** (`SKILL.md`) | Domain expertise — when/why/what-if judgment, engagement-type heuristics, communication tone | `src/hub_cowork/skills/<name>/SKILL.md` | Numbered runbooks, string-formatting recipes, control-flow markers, anything that could be a Python function |
 | **Tool** (`@mcp.tool`) | Mechanical work — fetch, parse, transform, write | An MCP server module under `mcp_servers/<name>/tools/` or `skills/<name>/mcp_server/tools/` | Decide what to tell the user, call other tools, construct credentials, hardcode user-facing prose |
+| **Memory & state** (`ConversationThread` + `previous_response_id`) | Resumable per-conversation state — what the model already knows, what stage the workflow is in, whether the thread is parked waiting for the user | `~/.hub-cowork/threads/{active,archive}/<id>.json` (locally) + Azure OpenAI's server-side response chain (cloud) | Mirror the model's history into a parallel `messages` list, hold per-skill scratchpads, or stuff inter-phase state into on-disk JSON |
+
+### How memory works (and why there's no separate "memory store")
+
+Hub Cowork follows the Cowork principle that conversation state belongs to the model, not the runtime. The full history of every turn — user messages, tool calls, tool results, model reasoning — is held **server-side by the Responses API**, keyed off `previous_response_id`. Locally we persist only enough to resume:
+
+- `previous_response_id` — the pointer the API uses to reconstruct the conversation on the next turn.
+- `status` — `running` / `awaiting_user` / `completed` / `failed` / `archived`.
+- Lightweight UI metadata (`progress_log`, `code_log`) — write-only side channels, never fed back into the LLM context.
+
+When the model ends a turn with a question, `agent_core` flips the thread to `awaiting_user` and the executor worker exits. The thread sits parked — on disk, with its `previous_response_id` — indefinitely. The user can answer in five seconds, an hour later from Teams, or the next morning after a laptop reboot. As soon as the reply arrives, a fresh `_ThreadWorker` calls the Responses API with the same `previous_response_id` and the model **picks up exactly where it left off, with the full prior context already in scope**. There is no replay, no transcript reconstruction, no skill-side memory shuffling.
+
+A few corollaries fall out of this:
+
+- **The host can restart mid-conversation.** Active threads on disk reload at boot; their `previous_response_id` still resolves at Azure (response chains live ~30 days). The user notices nothing.
+- **No tool ever "remembers" anything across calls.** Tools are stateless and return facts; if a later tool needs context from an earlier one, the model fishes it out of the conversation history when it composes the next call's arguments.
+- **Skills don't carry inter-phase scratchpads.** A multi-phase workflow like `engagement_agenda` flows phase → phase via `previous_response_id`; there is no `engagement_context.json` handoff file between phases, no shared dict, no per-skill cache.
+- **One small carve-out for run-over-run memory.** `shelf_watch` is the one skill that genuinely needs *cross-conversation* memory — "what were the prices last week?" That is stored as a small per-run JSON snapshot under `<agenda_output_folder>/shelf-watch/runs/` plus a rolling `history.json`, owned by the skill's tools. It's the exception that proves the rule: the moment a workflow needs to remember something that outlives a conversation, the answer is a tool that reads/writes a file the user owns — not a runtime memory subsystem.
 
 The runtime in `core/agent_core.py` is **wiring, not intelligence**. It does not parse model output for control-flow markers. It does not chain skills. It does not interpret tool results. The canonical loop is exactly:
 
